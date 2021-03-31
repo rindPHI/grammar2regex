@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple, Set, Union, Callable
 import pydot
 from fuzzingbook.Grammars import unreachable_nonterminals, nonterminals, is_nonterminal
 
-from grammargraph import GrammarGraph
+from grammargraph import GrammarGraph, NonterminalNode
 
 Nonterminal = str
 Grammar = Dict[Nonterminal, List[str]]
@@ -26,7 +26,7 @@ class RegularityChecker:
         self.grammar_type = GrammarType.UNDET
         self.grammar_graph = GrammarGraph(grammar)
 
-    def is_regular(self, nonterminal: str, call_seq: Tuple = ()) -> bool:
+    def is_regular(self, nonterminal: Union[str, NonterminalNode], call_seq: Tuple = ()) -> bool:
         """
         Checks whether the language generated from "grammar" starting in "nonterminal" is regular.
         This is the case if
@@ -39,6 +39,10 @@ class RegularityChecker:
         :return: True iff the language defined by the sublanguage of grammar's language when
         starting in nonterminal is regular.
         """
+
+        if type(nonterminal) is str:
+            nonterminal = self.grammar_graph.get_node(nonterminal)
+        nonterminal: NonterminalNode
 
         if nonterminal in call_seq:
             return True

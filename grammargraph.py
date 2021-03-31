@@ -116,6 +116,23 @@ class GrammarGraph:
         root_node = NonterminalNode("<start>", [start_node])
         return GrammarGraph(root_node)
 
+    def is_tree(self):
+        visited = [self.root]
+        queue = [self.root]
+
+        while queue:
+            node = queue.pop(0)
+
+            if issubclass(type(node), NonterminalNode):
+                for child in node.children:
+                    if child in visited:
+                        return False
+                    else:
+                        queue.append(child)
+                        visited.append(child)
+
+        return True
+
     def get_node(self, nonterminal: str) -> Union[None, NonterminalNode]:
         assert is_nonterminal(nonterminal)
         candidates = typing.cast(List[NonterminalNode],
@@ -164,7 +181,9 @@ class GrammarGraph:
             nonlocal nonterminal_nodes, terminal_ids
 
             if not is_nonterminal(label):
-                return TerminalNode(label, terminal_ids.setdefault(label, 1))
+                terminal_id = terminal_ids.setdefault(label, 1)
+                terminal_ids[label] = terminal_id + 1
+                return TerminalNode(label, terminal_id)
 
             if label in nonterminal_nodes:
                 return nonterminal_nodes[label]

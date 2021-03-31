@@ -7,9 +7,12 @@ from grammargraph import GrammarGraph
 
 class TestRegularityChecker(unittest.TestCase):
 
+    def test_todot(self):
+        graph = GrammarGraph.from_grammar(JSON_GRAMMAR)
+        print(graph.to_dot())
+
     def test_reachability_and_filter(self):
         graph = GrammarGraph.from_grammar(JSON_GRAMMAR)
-        # print(graph.to_dot())
 
         element_node = graph.get_node("<element>")
         self.assertTrue(graph.reachable(element_node, element_node))
@@ -26,6 +29,15 @@ class TestRegularityChecker(unittest.TestCase):
     def test_to_grammar(self):
         graph = GrammarGraph.from_grammar(JSON_GRAMMAR)
         self.assertEqual(JSON_GRAMMAR, graph.to_grammar())
+
+    def test_is_tree(self):
+        graph = GrammarGraph.from_grammar(JSON_GRAMMAR)
+        self.assertFalse(graph.is_tree())
+        self.assertTrue(graph.subgraph("<character>").is_tree())
+        self.assertTrue(graph.subgraph("<digit>").is_tree())
+        self.assertFalse(graph.subgraph("<digits>").is_tree())
+        self.assertTrue(graph.subgraph("<sign>").is_tree())
+
 
 if __name__ == '__main__':
     unittest.main()
