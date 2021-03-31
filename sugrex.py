@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple, Set, Union, Callable
 import pydot
 from fuzzingbook.Grammars import unreachable_nonterminals, nonterminals, is_nonterminal
 
-from grammargraph import GrammarGraph, NonterminalNode
+from grammargraph import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode
 
 Nonterminal = str
 Grammar = Dict[Nonterminal, List[str]]
@@ -24,7 +24,7 @@ class RegularityChecker:
     def __init__(self, grammar):
         self.grammar = grammar
         self.grammar_type = GrammarType.UNDET
-        self.grammar_graph = GrammarGraph(grammar)
+        self.grammar_graph = GrammarGraph.from_grammar(grammar)
 
     def is_regular(self, nonterminal: Union[str, NonterminalNode], call_seq: Tuple = ()) -> bool:
         """
@@ -40,6 +40,7 @@ class RegularityChecker:
         starting in nonterminal is regular.
         """
 
+
         if type(nonterminal) is str:
             nonterminal = self.grammar_graph.get_node(nonterminal)
         nonterminal: NonterminalNode
@@ -47,54 +48,56 @@ class RegularityChecker:
         if nonterminal in call_seq:
             return True
 
-        nonterminal_symbols: Set[str] = \
-            set(itertools.chain(*[nonterminals(expansion) for expansion in self.grammar[nonterminal]]))
+        # If the graph is a tree, we can easily create a regular expression with
+        # concatenations and alternatives.
 
-        if not nonterminal_symbols:
+        if self.grammar_graph.subgraph(nonterminal).is_tree():
             return True
 
-        if nonterminal not in nonterminal_symbols:
-            if any([self.grammar_graph.reachable(self.grammar_graph.get_node(child_nonterminal),
-                                                 self.grammar_graph.get_node(nonterminal))
-                    for child_nonterminal in nonterminal_symbols]):
-                return False
-            return all([self.is_regular(child_nonterminal, call_seq + (nonterminal,))
-                        for child_nonterminal in nonterminal_symbols])
+        # If there is recursion, check if those children nonterminals with backlinks
+        # are always at the left- or rightmost position, and all others form trees.
+        # Note that backlink nonterminals in middle positions are unproblematic, since
+        # we can transfer them to be at either position. It only must not be mixed, and
+        # there may be at most one nonterminal with backlinks.
 
-        for expansion in self.grammar[nonterminal]:
-            nonterminals_in_expansion = set(nonterminals(expansion))
+        choice_node: ChoiceNode
+        for choice_node in nonterminal.children:
+            found_backlink = False
+            backlink_position = -1
+            for index, child in enumerate(choice_node.children):
+                if type(child) is TerminalNode:
+                    continue
 
-            if not nonterminals_in_expansion:
-                continue
+                child: NonterminalNode
+                if self.grammar_graph.subgraph(child).is_tree():
+                    continue
 
-            if len(nonterminals_in_expansion) > 1:
-                return False
-
-            nonterminal_in_expansion = list(nonterminals_in_expansion)[0]
-
-            expansion_elements = re.sub(f"({re.escape(nonterminal_in_expansion)})",
-                                        '[cut]\\1[cut]',
-                                        expansion).split("[cut]")
-            index = expansion_elements.index(nonterminal_in_expansion)
-
-            if index == len(expansion_elements) - 1:
-                if self.grammar_type == GrammarType.LEFT_LINEAR:
+                if found_backlink:
                     return False
-                if self.grammar_type == GrammarType.UNDET:
-                    self.grammar_type = GrammarType.RIGHT_LINEAR
 
-            if index == 0:
-                if self.grammar_type == GrammarType.RIGHT_LINEAR:
-                    return False
-                if self.grammar_type == GrammarType.UNDET:
+                found_backlink = True
+                backlink_position = index
+
+            assert not found_backlink or backlink_position >= 0
+
+            if len(choice_node.children) > 1:
+                if backlink_position == 0:
+                    if self.grammar_type == GrammarType.RIGHT_LINEAR:
+                        return False
                     self.grammar_type = GrammarType.LEFT_LINEAR
 
-            # Middle positions can be converted to either option
+                if backlink_position == len(choice_node.children) - 1:
+                    if self.grammar_type == GrammarType.LEFT_LINEAR:
+                        return False
+                    self.grammar_type = GrammarType.RIGHT_LINEAR
 
-            if not self.is_regular(nonterminal_in_expansion, call_seq + (nonterminal,)):
-                return False
+        all_nontree_children_nonterminals = set([])
+        for choice_node in nonterminal.children:
+            for child in choice_node.children:
+                if type(child) is NonterminalNode and not self.grammar_graph.subgraph(child).is_tree():
+                    all_nontree_children_nonterminals.add(child)
 
-        return True
+        return all([self.is_regular(child, call_seq + (nonterminal,)) for child in all_nontree_children_nonterminals])
 
     @staticmethod
     def delete_unreachable(grammar: Grammar):

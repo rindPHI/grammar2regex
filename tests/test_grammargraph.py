@@ -1,15 +1,15 @@
 import unittest
 
-from fuzzingbook.Grammars import JSON_GRAMMAR
+from fuzzingbook.Grammars import JSON_GRAMMAR, US_PHONE_GRAMMAR
 
 from grammargraph import GrammarGraph
 
 
 class TestRegularityChecker(unittest.TestCase):
 
-    def test_todot(self):
-        graph = GrammarGraph.from_grammar(JSON_GRAMMAR)
-        print(graph.to_dot())
+    # def test_todot(self):
+    #     graph = GrammarGraph.from_grammar(JSON_GRAMMAR)
+    #     print(graph.to_dot())
 
     def test_reachability_and_filter(self):
         graph = GrammarGraph.from_grammar(JSON_GRAMMAR)
@@ -37,6 +37,12 @@ class TestRegularityChecker(unittest.TestCase):
         self.assertTrue(graph.subgraph("<digit>").is_tree())
         self.assertFalse(graph.subgraph("<digits>").is_tree())
         self.assertTrue(graph.subgraph("<sign>").is_tree())
+        self.assertFalse(graph.subgraph("<start>").is_tree())
+
+    def test_is_tree_2(self):
+        graph = GrammarGraph.from_grammar(US_PHONE_GRAMMAR)
+        self.assertTrue(graph.subgraph("<exchange>").is_tree())
+        self.assertTrue(graph.subgraph("<start>").is_tree())
 
 
 if __name__ == '__main__':

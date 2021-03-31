@@ -23,7 +23,7 @@ class Node:
 class NonterminalNode(Node):
     def __init__(self, symbol: str, children: List[Node]):
         super().__init__(symbol)
-        self.children = children
+        self.children = children  # in fact, all children will be ChoiceNode instances.
 
     def __repr__(self):
         return f"NonterminalNode({self.quote_symbol()}, {repr(self.children)})"
@@ -59,7 +59,7 @@ class GrammarGraph:
     def __repr__(self):
         return f"GrammarGraph({repr(self.root)})"
 
-    def bfs(self, action: Callable[[Node], None], start_node: Union[None, Node] = None):
+    def bfs(self, action: Callable[[Node], Union[None, bool]], start_node: Union[None, Node] = None):
         if start_node is None:
             start_node = self.root
 
@@ -68,7 +68,8 @@ class GrammarGraph:
 
         while queue:
             node = queue.pop(0)
-            action(node)
+            if action(node):
+                return
 
             if issubclass(type(node), NonterminalNode):
                 for child in node.children:
@@ -91,13 +92,10 @@ class GrammarGraph:
                 return
 
             node: NonterminalNode
+            choice_node: ChoiceNode
             productions = []
-            if type(node.children[0]) is not ChoiceNode:
-                productions.append("".join([child.symbol for child in node.children]))
-            else:
-                choice_node: ChoiceNode
-                for choice_node in node.children:
-                    productions.append("".join([child.symbol for child in choice_node.children]))
+            for choice_node in node.children:
+                productions.append("".join([child.symbol for child in choice_node.children]))
 
             result[node.symbol] = productions
 
@@ -117,21 +115,20 @@ class GrammarGraph:
         return GrammarGraph(root_node)
 
     def is_tree(self):
-        visited = [self.root]
-        queue = [self.root]
+        # We cannot simply perform a BFS and return False if any child has already been
+        # seen since we re-use nodes for the same nonterminal (they could be copied, but
+        # I'd rather not do this).
+        result = True
 
-        while queue:
-            node = queue.pop(0)
-
+        def action(node: Node):
+            nonlocal result
             if issubclass(type(node), NonterminalNode):
-                for child in node.children:
-                    if child in visited:
-                        return False
-                    else:
-                        queue.append(child)
-                        visited.append(child)
+                if self.reachable(node, node):
+                    result = False
+                    return True
 
-        return True
+        self.bfs(action)
+        return result
 
     def get_node(self, nonterminal: str) -> Union[None, NonterminalNode]:
         assert is_nonterminal(nonterminal)
@@ -166,8 +163,8 @@ class GrammarGraph:
 
             if issubclass(type(node), NonterminalNode):
                 node: NonterminalNode
-                for child in node.children:
-                    graph.add_edge(pydot.Edge(node.quote_symbol(), child.quote_symbol()))
+                for nr, child in enumerate(node.children):
+                    graph.add_edge(pydot.Edge(node.quote_symbol(), child.quote_symbol(), label=f"<{nr + 1}>"))
 
         self.bfs(action)
         return graph.to_string()
@@ -201,9 +198,6 @@ class GrammarGraph:
                     else:
                         expansion_children_nodes.append(recurse(elem))
                 children_nodes.append(ChoiceNode(f"{label}-choice-{nr + 1}", expansion_children_nodes))
-
-            if len(children_nodes) == 1 and type(children_nodes[0]) is ChoiceNode:
-                new_node.children = children_nodes[0].children
 
             return new_node
 
