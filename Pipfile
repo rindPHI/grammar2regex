@@ -6,6 +6,7 @@ name = "pypi"
 [packages]
 fuzzingbook = "*"
 pydot = "*"
+z3-solver = "*"
 
 [dev-packages]
 
