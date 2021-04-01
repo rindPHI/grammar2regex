@@ -111,7 +111,7 @@ class GrammarGraph:
         if start_node.symbol == "<start>":
             return self
 
-        root_node = NonterminalNode("<start>", [start_node])
+        root_node = NonterminalNode("<start>", [ChoiceNode("<start>-choice-1", [start_node])])
         return GrammarGraph(root_node)
 
     def is_tree(self):
