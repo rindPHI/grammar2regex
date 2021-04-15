@@ -8,6 +8,7 @@ fuzzingbook = "*"
 pydot = "*"
 z3-solver = "*"
 orderedset = "*"
+stringsampler = {path = "./../StringSMTSampler/dist/stringsampler-0.0.1.tar.gz"}
 
 [dev-packages]
 

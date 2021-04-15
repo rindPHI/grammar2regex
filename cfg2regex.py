@@ -1,9 +1,11 @@
+import random
 from enum import Enum
 from typing import Dict, List, Tuple, Union, Generator
 
+import itertools
 import z3
 
-from nfa import NFA
+from nfa import NFA, Transition
 from grammargraph import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
 
 Nonterminal = str
@@ -23,22 +25,109 @@ def state_generator(base: str) -> Generator[str, None, None]:
         i += 1
 
 
+def re_concat(*regular_expressions: z3.ReRef) -> z3.ReRef:
+    regular_expressions = [regex for regex in regular_expressions if not regex.eq(z3.Re(""))]
+
+    if not regular_expressions:
+        return z3.Re("")
+    elif len(regular_expressions) == 1:
+        return regular_expressions[0]
+    else:
+        return z3.Concat(*regular_expressions)
+
+
 class RegexConverter:
     def __init__(self, grammar):
         self.grammar = grammar
         self.grammar_type = GrammarType.UNDET
         self.grammar_graph = GrammarGraph.from_grammar(grammar)
 
-    def to_dfa(self, node: Union[str, Node]) -> Union[NFA, None]:
+    def str_to_nonterminal_node(self, node: Union[str, Node]) -> NonterminalNode:
+        if type(node) is str:
+            node = self.grammar_graph.get_node(node)
+            assert node
+        assert type(node) is NonterminalNode
+        return node
+
+    def to_regex(self, node: Union[str, Node], nfa: Union[NFA, None] = None) -> z3.ReRef:
+        def label_from_singleton_tr(transitions: List[Transition]) -> Union[None, z3.ReRef]:
+            return None if not transitions else transitions[0][1]
+
+        node = self.str_to_nonterminal_node(node)
+
+        # Can set nfa for testing reasons
+        if nfa is None:
+            nfa = self.to_nfa(node)
+
+        while len(nfa.states) > 2:
+            s = [state for state in nfa.states if state not in (nfa.initial_state, nfa.final_state)][0]
+
+            predecessors = [p for p in nfa.predecessors(s) if p != s]
+            successors = [q for q in nfa.successors(s) if q != s]
+            loops = nfa.transitions_between(s, s)
+            assert len(loops) <= 1
+
+            E_s_s = label_from_singleton_tr(loops)
+            E_s_s_star = None if E_s_s is None else z3.Star(E_s_s)
+
+            for p, q in itertools.product(predecessors, successors):
+                # New label: E(p, q) + E(p, s)E(s, s)*E(s, q)
+                p_q_trans = nfa.transitions_between(p, q)
+                p_s_trans = nfa.transitions_between(p, s)
+                s_q_trans = nfa.transitions_between(s, q)
+                assert len(p_q_trans) <= 1 and len(p_s_trans) <= 1 and len(s_q_trans) <= 1
+
+                E_p_q = label_from_singleton_tr(p_q_trans)
+                E_p_s = label_from_singleton_tr(p_s_trans)
+                assert E_p_s is not None
+                E_s_q = label_from_singleton_tr(s_q_trans)
+                assert E_s_q is not None
+
+                # E(p, s)E(s, s)*
+                regex = E_p_s if E_s_s_star is None else re_concat(E_p_s, E_s_s_star)
+                regex = re_concat(regex, E_s_q)
+
+                if E_p_q is not None:
+                    regex = z3.Union(E_p_q, regex)
+
+                nfa.delete_transitions(p_q_trans)
+                nfa.add_transition(p, regex, q)
+
+            nfa.delete_transitions(loops)
+            nfa.delete_state(s)
+
+        assert len(nfa.states) == 2
+
+        if len(nfa.transitions) >= 1:
+            p = nfa.initial_state
+            q = nfa.final_state
+
+            assert len(nfa.transitions_between(p, q)) == 1
+
+            p_p_trans = nfa.transitions_between(p, p)
+            p_q_trans = nfa.transitions_between(p, q)
+            q_q_trans = nfa.transitions_between(q, q)
+
+            E_p_q = label_from_singleton_tr(p_q_trans)
+            assert E_p_q is not None
+            E_p_p = label_from_singleton_tr(p_p_trans)
+            E_q_q = label_from_singleton_tr(q_q_trans)
+
+            # E(p,p)*E(p,q)E(q,q)*
+            regex = E_p_q if E_p_p is None else re_concat(z3.Star(E_p_p), E_p_p)
+            regex = regex if E_q_q is None else re_concat(regex, z3.Star(E_q_q))
+
+            return regex
+        else:
+            return next(iter(nfa.transitions))[1]
+
+    def to_nfa(self, node: Union[str, Node]) -> Union[NFA, None]:
         # TODO: Only works for epsilon-free grammars...
         #       http://www.cs.um.edu.mt/gordon.pace/Research/Software/Relic/Transformations/RG/toFSA.html
         # TODO: For left-linear grammars, have to invert the grammar and then the resulting DFA
         # TODO: Currently, we're computing an NFA. Have to turn this into DFA later. DO WE?
 
-        if type(node) is str:
-            node = self.grammar_graph.get_node(node)
-            assert node
-        assert type(node) is NonterminalNode
+        node = self.str_to_nonterminal_node(node)
 
         check_result = self.is_regular(node)
         if not check_result:
@@ -78,10 +167,11 @@ class RegexConverter:
                         if self.grammar_graph.subgraph(child).is_tree():
                             nfa.add_transition(current_state, self.regular_expression_from_tree(child), next_state)
                         else:
-                            sub_dfa = self.to_dfa(child)
+                            sub_dfa = self.to_nfa(child)
                             sub_dfa.substitute_final_state(next_state)
-                            nfa.transitions.update(sub_dfa.transitions)
-                            nfa.add_transition(current_state, z3.Re(""), sub_dfa.initial_state)
+                            nfa.add_transitions(sub_dfa.transitions)
+                            if (current_state, z3.Re(""), sub_dfa.initial_state) not in nfa.transitions:
+                                nfa.add_transition(current_state, z3.Re(""), sub_dfa.initial_state)
 
                     current_state = next_state
 
@@ -96,6 +186,13 @@ class RegexConverter:
                         queue.append(child)
 
         nfa.delete_isolated_states()
+
+        for p, q in itertools.product(nfa.states, nfa.states):
+            transitions = nfa.transitions_between(p, q)
+            if len(transitions) >= 1:
+                nfa.delete_transitions(transitions)
+                nfa.add_transition(p, z3.Union(*[l for (_, l, _) in transitions]), q)
+
         return nfa
 
     def regular_expression_from_tree(self, node: Union[str, Node]) -> z3.ReRef:
@@ -115,10 +212,7 @@ class RegexConverter:
         union_nodes: List[z3.ReRef] = []
         for choice_node in node.children:
             children_regexes = [self.regular_expression_from_tree(child) for child in choice_node.children]
-            if len(children_regexes) == 1:
-                child_result = children_regexes[0]
-            else:
-                child_result = z3.Concat(*children_regexes)
+            child_result = re_concat(*children_regexes)
 
             union_nodes.append(child_result)
 
