@@ -46,7 +46,11 @@ class TestRegexConverter(unittest.TestCase):
         self.assertEqual(z3.unsat, self.smt_check(z3.InRe("(000)200-0000", regex)))
         self.assertEqual(z3.unsat, self.smt_check(z3.InRe("(200)200-000", regex)))
 
-    def test_to_dfa(self):
+    def test_us_phone_grammar_to_nfa(self):
+        checker = RegexConverter(US_PHONE_GRAMMAR)
+        print(checker.to_dfa("<start>").to_dot())
+
+    def test_to_dfa_toy_grammar(self):
         grammar = {"<start>": ["<A>"],
                    "<A>": ["a<number><B>", "b<A>", "b"],
                    "<B>": ["a<C>", "b<B>"],
@@ -56,6 +60,10 @@ class TestRegexConverter(unittest.TestCase):
 
         converter = RegexConverter(grammar)
         print(converter.to_dfa("<A>").to_dot())
+
+    def test_to_dfa_json(self):
+        converter = RegexConverter(JSON_GRAMMAR)
+        print(converter.to_dfa("<string>").to_dot())
 
     @staticmethod
     def smt_check(formula):

@@ -47,6 +47,11 @@ class NFA:
         if final:
             self.final_state = state
 
+    def delete_isolated_states(self):
+        self.states = OrderedSet([state for state in self.states if any(
+            [(s1, l, s2) for (s1, l, s2) in self.transitions if state in (s1, s2)]
+        )])
+
     def substitute_final_state(self, new_final_state):
         old_final_state = self.final_state
         self.final_state = new_final_state

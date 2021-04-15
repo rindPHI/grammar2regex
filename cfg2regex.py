@@ -33,7 +33,7 @@ class RegexConverter:
         # TODO: Only works for epsilon-free grammars...
         #       http://www.cs.um.edu.mt/gordon.pace/Research/Software/Relic/Transformations/RG/toFSA.html
         # TODO: For left-linear grammars, have to invert the grammar and then the resulting DFA
-        # TODO: Currently, we're computing an NFA. Have to turn this into DFA later.
+        # TODO: Currently, we're computing an NFA. Have to turn this into DFA later. DO WE?
 
         if type(node) is str:
             node = self.grammar_graph.get_node(node)
@@ -95,6 +95,7 @@ class RegexConverter:
                         visited.append(child)
                         queue.append(child)
 
+        nfa.delete_isolated_states()
         return nfa
 
     def regular_expression_from_tree(self, node: Union[str, Node]) -> z3.ReRef:
@@ -111,7 +112,7 @@ class RegexConverter:
         node: NonterminalNode
         choice_node: ChoiceNode
 
-        result: Union[z3.ReRef, None] = None
+        union_nodes: List[z3.ReRef] = []
         for choice_node in node.children:
             children_regexes = [self.regular_expression_from_tree(child) for child in choice_node.children]
             if len(children_regexes) == 1:
@@ -119,13 +120,14 @@ class RegexConverter:
             else:
                 child_result = z3.Concat(*children_regexes)
 
-            if result is None:
-                result = child_result
-            else:
-                result = z3.Union(result, child_result)
+            union_nodes.append(child_result)
 
-        assert result is not None
-        return result
+        assert union_nodes
+
+        if len(union_nodes) == 1:
+            return union_nodes[0]
+        else:
+            return z3.Union(*union_nodes)
 
     def is_regular(self, nonterminal: Union[str, NonterminalNode], call_seq: Tuple = ()) -> bool:
         """
