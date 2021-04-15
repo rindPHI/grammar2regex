@@ -6,7 +6,7 @@ import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR
 from fuzzingbook.Parser import EarleyParser, State
-from string_sampler import StringSampler, FastFeedbackParser
+from string_sampler import StringSampler, FastFeedbackParser, StringSamplerConfiguration
 
 from cfg2regex import RegexConverter, GrammarType
 from nfa import NFA
@@ -100,9 +100,16 @@ class TestRegexConverter(unittest.TestCase):
 
         self.check_grammar_regex_equivalence(fuzzer, parser, regex)
 
-    def test_to_dfa_json(self):
+    def test_json_string_to_regex(self):
+        logging.basicConfig(level=logging.DEBUG)
         converter = RegexConverter(JSON_GRAMMAR)
-        print(converter.to_nfa("<string>").to_dot())
+        grammar = converter.grammar_graph.subgraph("<string>").to_grammar()
+        regex = converter.to_regex("<string>")
+
+        fuzzer = GrammarCoverageFuzzer(grammar)
+        parser = fast_feedback_parser(EarleyParser(grammar))
+
+        self.check_grammar_regex_equivalence(fuzzer, parser, regex)
 
     def check_grammar_regex_equivalence(self,
                                         fuzzer: GrammarCoverageFuzzer,
@@ -117,7 +124,8 @@ class TestRegexConverter(unittest.TestCase):
         sampler = StringSampler(
             z3.InRe(z3.String("var"), regex),
             generators={"var": lambda: fuzzer.fuzz()},
-            parsers={"var": parser}
+            parsers={"var": parser},
+            config=StringSamplerConfiguration(reuse_initial_solution=True)
         )
 
         num_inputs = 0

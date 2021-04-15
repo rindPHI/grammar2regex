@@ -42,13 +42,6 @@ class RegexConverter:
         self.grammar_type = GrammarType.UNDET
         self.grammar_graph = GrammarGraph.from_grammar(grammar)
 
-    def str_to_nonterminal_node(self, node: Union[str, Node]) -> NonterminalNode:
-        if type(node) is str:
-            node = self.grammar_graph.get_node(node)
-            assert node
-        assert type(node) is NonterminalNode
-        return node
-
     def to_regex(self, node: Union[str, Node], nfa: Union[NFA, None] = None) -> z3.ReRef:
         def label_from_singleton_tr(transitions: List[Transition]) -> Union[None, z3.ReRef]:
             return None if not transitions else transitions[0][1]
@@ -298,3 +291,10 @@ class RegexConverter:
                     all_nontree_children_nonterminals.add(child)
 
         return all([self.is_regular(child, call_seq + (nonterminal,)) for child in all_nontree_children_nonterminals])
+
+    def str_to_nonterminal_node(self, node: Union[str, Node]) -> NonterminalNode:
+        if type(node) is str:
+            node = self.grammar_graph.get_node(node)
+            assert node
+        assert type(node) is NonterminalNode
+        return node
