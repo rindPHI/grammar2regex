@@ -54,7 +54,7 @@ class TestRegexConverter(unittest.TestCase):
 
     def test_us_phone_grammar_to_regex_from_tree(self):
         checker = RegexConverter(US_PHONE_GRAMMAR)
-        regex = checker.regular_expression_from_tree("<start>")
+        regex = checker.tree_to_regex("<start>")
 
         self.assertEqual(z3.sat, self.smt_check(z3.InRe("(200)200-0000", regex)))
         self.assertEqual(z3.unsat, self.smt_check(z3.InRe("(000)200-0000", regex)))
@@ -62,7 +62,7 @@ class TestRegexConverter(unittest.TestCase):
 
     def test_us_phone_grammar_to_regex(self):
         checker = RegexConverter(US_PHONE_GRAMMAR)
-        regex = checker.to_regex("<start>")
+        regex = checker.regular_grammar_to_regex("<start>")
 
         fuzzer = GrammarCoverageFuzzer(US_PHONE_GRAMMAR)
         parser = fast_feedback_parser(EarleyParser(US_PHONE_GRAMMAR))
@@ -71,13 +71,13 @@ class TestRegexConverter(unittest.TestCase):
 
     def test_toy_grammar_to_nfa(self):
         checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
-        checker.to_nfa("<A>")
+        checker.regular_grammar_to_nfa("<A>")
         # No Exception
 
     def test_toy_grammar_to_regex(self):
         checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
         grammar = checker.grammar_graph.subgraph("<A>").to_grammar()
-        regex = checker.to_regex("<A>")
+        regex = checker.regular_grammar_to_regex("<A>")
 
         fuzzer = GrammarCoverageFuzzer(grammar)
         parser = fast_feedback_parser(EarleyParser(grammar))
@@ -93,7 +93,7 @@ class TestRegexConverter(unittest.TestCase):
         }
 
         checker = RegexConverter(grammar)
-        regex = checker.to_regex("<A>")
+        regex = checker.regular_grammar_to_regex("<A>")
 
         fuzzer = GrammarCoverageFuzzer(grammar)
         parser = fast_feedback_parser(EarleyParser(grammar))
@@ -104,7 +104,7 @@ class TestRegexConverter(unittest.TestCase):
         logging.basicConfig(level=logging.DEBUG)
         converter = RegexConverter(JSON_GRAMMAR)
         grammar = converter.grammar_graph.subgraph("<string>").to_grammar()
-        regex = converter.to_regex("<string>")
+        regex = converter.regular_grammar_to_regex("<string>")
 
         fuzzer = GrammarCoverageFuzzer(grammar)
         parser = fast_feedback_parser(EarleyParser(grammar))

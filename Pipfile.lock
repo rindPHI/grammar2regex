@@ -48,7 +48,8 @@
         },
         "stringsampler": {
             "hashes": [
-                "sha256:dba90000ade1761c1afc8f962cb7b0022819d3d003d102e33936488e8b1f7cef"
+                "sha256:dba90000ade1761c1afc8f962cb7b0022819d3d003d102e33936488e8b1f7cef",
+                "sha256:fea98c75b524a48a3c49c7451c89fb07bb8573dfc52ed714c6381ee42535fc46"
             ],
             "path": "./../StringSMTSampler/dist/stringsampler-0.0.1.tar.gz",
             "version": "==0.0.1"
