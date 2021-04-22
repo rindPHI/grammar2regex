@@ -8,6 +8,7 @@ from fuzzingbook.Parser import EarleyParser
 from string_sampler.sampler import StringSampler, StringSamplerConfiguration
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
+from grammar_to_regex.tests.test_helpers import TestHelpers
 
 RIGHT_LINEAR_TOY_GRAMMAR = \
     {"<start>": ["<A>"],
@@ -49,6 +50,14 @@ class TestRegexConverter(unittest.TestCase):
         self.assertEqual(checker.grammar_type, GrammarType.RIGHT_LINEAR)
         self.assertTrue(checker.is_regular("<string>"))
         self.assertEqual(checker.grammar_type, GrammarType.RIGHT_LINEAR)
+
+    def test_json_grammar_nonregular_expansions(self):
+        checker = RegexConverter(JSON_GRAMMAR)
+        self.assertEqual(
+            {('<elements>', 0, 1), ('<array>', 1, 1), ('<object>', 1, 1),
+             ('<symbol-1-1>', 1, 1), ('<element>', 0, 1),
+             ('<symbol-2>', 1, 1), ('<members>', 0, 1)},
+            checker.nonregular_expansions("<elements>"))
 
     def test_us_phone_grammar_to_regex_from_tree(self):
         checker = RegexConverter(US_PHONE_GRAMMAR)
@@ -109,6 +118,19 @@ class TestRegexConverter(unittest.TestCase):
         regex = converter.right_linear_grammar_to_regex("<string>")
 
         self.check_grammar_regex_equivalence(grammar, regex)
+
+    def test_unwind_expansion(self):
+        grammar = {
+            "<start>": ["<A>"],
+            "<A>": ["a<B><B><C>"],
+            "<B>": ["b<B>", "c<B>", ""],
+            "<C>": ["c"]
+        }
+
+        checker = RegexConverter(grammar, max_num_expansions=5)
+        unwound_grammar = checker.unwind_grammar([("<A>", 0, 2), ("<A>", 0, 1)])
+        self.assertNotIn("<B>", list(unwound_grammar.keys()))
+        TestHelpers.assert_grammar_inclusion(self, unwound_grammar, grammar, allowed_failure_percentage=30)
 
     def check_grammar_regex_equivalence(self,
                                         grammar: Grammar,

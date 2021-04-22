@@ -3,7 +3,6 @@ import unittest
 from fuzzingbook.Grammars import JSON_GRAMMAR, US_PHONE_GRAMMAR
 
 from grammar_to_regex.grammargraph import GrammarGraph
-from grammar_to_regex.helpers import reverse_grammar
 
 
 class TestRegularityChecker(unittest.TestCase):
@@ -44,23 +43,6 @@ class TestRegularityChecker(unittest.TestCase):
         graph = GrammarGraph.from_grammar(US_PHONE_GRAMMAR)
         self.assertTrue(graph.subgraph("<exchange>").is_tree())
         self.assertTrue(graph.subgraph("<start>").is_tree())
-
-    def test_reverse(self):
-        grammar = {
-            "<start>": ["<A>"],
-            "<A>": ["a<B><C>"],
-            "<B>": ["b<B>", ""],
-            "<C>": ["c"]
-        }
-
-        reversed_grammar = {
-            "<start>": ["<A>"],
-            "<A>": ["<C><B>a"],
-            "<B>": ["<B>b", ""],
-            "<C>": ["c"]
-        }
-
-        self.assertEqual(reversed_grammar, reverse_grammar(grammar))
 
 
 if __name__ == '__main__':

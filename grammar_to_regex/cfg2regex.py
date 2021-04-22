@@ -1,14 +1,16 @@
+import copy
 import logging
 from enum import Enum
-from typing import Dict, List, Tuple, Union, Generator
+from typing import Dict, List, Tuple, Union, Generator, Set
 
 import itertools
 import z3
+from orderedset import OrderedSet
 
 from grammar_to_regex.grammargraph import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
-from grammar_to_regex.helpers import reverse_grammar
+from grammar_to_regex.helpers import reverse_grammar, split_expansion, expand_nonterminals, delete_unreachable
 from grammar_to_regex.nfa import NFA, Transition
-from grammar_to_regex.type_defs import Grammar
+from grammar_to_regex.type_defs import Grammar, Nonterminal
 
 
 class GrammarType(Enum):
@@ -36,10 +38,19 @@ def re_concat(*regular_expressions: z3.ReRef) -> z3.ReRef:
 
 
 class RegexConverter:
-    def __init__(self, grammar):
+    def __init__(self, grammar: Grammar, max_num_expansions: int = 10):
+        """
+        :param grammar: The underlying grammar.
+        :param max_num_expansions: For non-regular (sub) grammars, we can unwind problematic nonterminals in
+                                   expansions. This parameter sets a depth bound on the number of unwindings.
+        """
+
         self.grammar: Grammar = grammar
+        self.max_num_expansions = max_num_expansions
+
         self.grammar_type: GrammarType = GrammarType.UNDET
         self.grammar_graph: GrammarGraph = GrammarGraph.from_grammar(grammar)
+
         self.logger = logging.Logger("RegexConverter")
 
     def left_linear_grammar_to_regex(self, node_symbol: Union[str, Node]) -> z3.ReRef:
@@ -135,16 +146,7 @@ class RegexConverter:
         else:
             return next(iter(nfa.transitions))[1]
 
-    def assert_regular(self, node):
-        """Asserts that the sub grammar at node is regular. Has a side effect: self.grammar_type is set!"""
-        assert self.is_regular(node), f"The sub grammar at node {node.symbol} is not regular " \
-                                      f"and cannot be converted to an NFA."
-
     def right_linear_grammar_to_nfa(self, node: Union[str, Node]) -> NFA:
-        # TODO: Only works for epsilon-free grammars...
-        #       http://www.cs.um.edu.mt/gordon.pace/Research/Software/Relic/Transformations/RG/toFSA.html
-        #       Really???
-
         node = self.str_to_nonterminal_node(node)
         self.assert_regular(node)
         assert self.grammar_type != GrammarType.LEFT_LINEAR
@@ -239,22 +241,118 @@ class RegexConverter:
         else:
             return z3.Union(*union_nodes)
 
-    def is_regular(self, nonterminal: Union[str, NonterminalNode], call_seq: Tuple = ()) -> bool:
+    def unwind_grammar(self, problematic_expansions: List[Tuple[Nonterminal, int, int]]) -> Grammar:
+        """Unwinds the given problematic expansions up to self.max_num_expansions times. In the result, only
+        terminal symbols or nonterminals that are root of a tree in the grammar graph are allowed."""
+
+        result: Grammar = copy.deepcopy(self.grammar)
+
+        while problematic_expansions:
+            nonterminal, expansion_idx, nonterminal_idx = problematic_expansions.pop()
+
+            expansion = result[nonterminal][expansion_idx]
+            expansion_elements = split_expansion(expansion)
+            nonterminal_to_expand = expansion_elements[nonterminal_idx]
+
+            tree_like_symbols = {nonterminal for nonterminal in self.grammar.keys() if
+                                 self.grammar_graph.subgraph(nonterminal).is_tree()}
+
+            expansions = expand_nonterminals(self.grammar, nonterminal_to_expand, self.max_num_expansions,
+                                             tree_like_symbols)
+
+            if len(expansions) != 1:
+                # Update expansion_idx references for problematic expansions with the same nonterminal
+                other_problem: Tuple[Nonterminal, int, int]
+                for other_problem in [problem for problem in list(problematic_expansions)
+                                      if problem[0] == nonterminal and
+                                         problem[1] >= expansion_idx]:
+                    _, other_expansion_idx, other_nonterminal_idx = other_problem
+                    if other_expansion_idx > expansion_idx:
+                        problematic_expansions.remove((nonterminal, other_expansion_idx, other_nonterminal_idx))
+                        problematic_expansions.append((nonterminal,
+                                                    other_expansion_idx + len(expansions) - 1,
+                                                    other_nonterminal_idx))
+                    if other_expansion_idx == expansion_idx:
+                        problematic_expansions.remove((nonterminal, other_expansion_idx, other_nonterminal_idx))
+                        for i in range(len(expansions)):
+                            problematic_expansions.append((nonterminal,
+                                                        other_expansion_idx + i,
+                                                        other_nonterminal_idx))
+
+            new_expansions: List[str] = []
+
+            for new_expansion in expansions:
+                new_expansions.append("".join(expansion_elements[:nonterminal_idx] +
+                                              [new_expansion] +
+                                              expansion_elements[nonterminal_idx + 1:]))
+
+                num_new_expansion_elements = 0 if not new_expansion else len(split_expansion(new_expansion))
+
+                if num_new_expansion_elements != 1:
+                    # Update nonterminal_idx references for problematic expansions with the same
+                    # nonterminal and expansion index.
+                    for other_problem in [problem for problem in list(problematic_expansions)
+                                          if problem[0] == nonterminal and
+                                             expansion_idx <= problem[1] <= expansion_idx + len(expansions) and
+                                             problem[2] >= nonterminal_idx]:
+                        _, other_expansion_idx, other_nonterminal_idx = other_problem
+                        # assert other_nonterminal_idx > nonterminal_idx, \
+                        #     "There should not be two problems for the same nonterminal occurrence"
+
+                        problematic_expansions.remove((nonterminal, other_expansion_idx, other_nonterminal_idx))
+                        problematic_expansions.append((nonterminal,
+                                                    other_expansion_idx,
+                                                    other_nonterminal_idx + num_new_expansion_elements - 1))
+
+            result[nonterminal] = (result[nonterminal][:expansion_idx] +
+                                   list(OrderedSet(new_expansions)) +
+                                   result[nonterminal][expansion_idx + 1:])
+
+        delete_unreachable(result)
+        return result
+
+    def assert_regular(self, node):
+        """Asserts that the sub grammar at node is regular. Has a side effect: self.grammar_type is set!"""
+        assert self.is_regular(node), f"The sub grammar at node {node.symbol} is not regular " \
+                                      f"and cannot be converted to an NFA."
+
+    def is_regular(self, nonterminal: Union[str, NonterminalNode]) -> bool:
         """
         Checks whether the language generated from "grammar" starting in "nonterminal" is regular.
         This is the case if all productions either are left- or rightlinear, with the exception that
         they may contain nonterminals that form a tree in the grammar. Those trivially represent
-        retular expressions.
+        regular expressions.
 
-        :param grammar: A context-free grammar.
         :param nonterminal: A nonterminal within this grammar.
         :param call_seq: A tuple of already seen nodes, used to break infinite recursion.
         :return: True iff the language defined by the sublanguage of grammar's language when
-        starting in nonterminal is regular.
+                 starting in nonterminal is regular.
+        """
+
+        return not self.nonregular_expansions(nonterminal)
+
+    def nonregular_expansions(self,
+                              nonterminal: Union[str, NonterminalNode],
+                              call_seq: Tuple = (),
+                              problems: Union[None, Set[Tuple[Nonterminal, int, int]]] = None) -> \
+            Set[Tuple[Nonterminal, int, int]]:
+        """
+        Returns pointers to expansions in a grammar which make the grammar non-regular. Those can then
+        be unwound to convert the grammar into a regular grammar which represents a sub language.
+
+        :param nonterminal: A nonterminal within this grammar.
+        :param call_seq: A tuple of already seen nodes, used to break infinite recursion.
+        :param problems: The so far encountered problematic expansions
+        :return: A set of tuples, where each tuple represents a problematic expansion: A nonterminal (left-hand
+                 side in the grammar), the index of the expansion where the problem occurs, and the index of
+                 the problematic nonterminal within the expansion.
         """
 
         if not call_seq:
             self.grammar_type = GrammarType.UNDET
+
+        if problems is None:
+            problems = set([])
 
         if type(nonterminal) is str:
             nonterminal = self.grammar_graph.get_node(nonterminal)
@@ -262,19 +360,19 @@ class RegexConverter:
         nonterminal: NonterminalNode
 
         if nonterminal in call_seq:
-            return True
+            return problems
 
         # If the graph is a tree, we can easily create a regular expression with
         # concatenations and alternatives.
 
         if self.grammar_graph.subgraph(nonterminal).is_tree():
-            return True
+            return problems
 
         # If there is recursion, check if those children nonterminals with backlinks
         # are always at the left- or rightmost position, and all others are regular.
 
         choice_node: ChoiceNode
-        for choice_node in nonterminal.children:
+        for choice_node_index, choice_node in enumerate(nonterminal.children):
             found_backlink = False
             backlink_position = -1
             for index, child in enumerate(choice_node.children):
@@ -282,13 +380,15 @@ class RegexConverter:
                     continue
 
                 child: NonterminalNode
+                # if (self.grammar_graph.subgraph(child).is_tree() or
+                #         (not self.grammar_graph.reachable(child, nonterminal) and
+                #          self.nonregular_expansions(child, call_seq + (nonterminal,), problems))):
                 if (self.grammar_graph.subgraph(child).is_tree() or
-                        (not self.grammar_graph.reachable(child, nonterminal) and
-                         self.is_regular(child, call_seq + (nonterminal,)))):
+                        not self.grammar_graph.reachable(child, nonterminal)):
                     continue
 
                 if found_backlink:
-                    return False
+                    problems.add((nonterminal.symbol, choice_node_index, index))
 
                 found_backlink = True
                 backlink_position = index
@@ -298,14 +398,14 @@ class RegexConverter:
             if found_backlink and len(choice_node.children) > 1:
                 if backlink_position == 0:
                     if self.grammar_type == GrammarType.RIGHT_LINEAR:
-                        return False
+                        problems.add((nonterminal.symbol, choice_node_index, backlink_position))
                     self.grammar_type = GrammarType.LEFT_LINEAR
                 elif backlink_position == len(choice_node.children) - 1:
                     if self.grammar_type == GrammarType.LEFT_LINEAR:
-                        return False
+                        problems.add((nonterminal.symbol, choice_node_index, backlink_position))
                     self.grammar_type = GrammarType.RIGHT_LINEAR
                 else:
-                    return False
+                    problems.add((nonterminal.symbol, choice_node_index, backlink_position))
 
         all_nontree_children_nonterminals = set([])
         for choice_node in nonterminal.children:
@@ -313,7 +413,8 @@ class RegexConverter:
                 if type(child) is NonterminalNode and not self.grammar_graph.subgraph(child).is_tree():
                     all_nontree_children_nonterminals.add(child)
 
-        return all([self.is_regular(child, call_seq + (nonterminal,)) for child in all_nontree_children_nonterminals])
+        return set().union(*[self.nonregular_expansions(child, call_seq + (nonterminal,), problems)
+                             for child in all_nontree_children_nonterminals])
 
     def str_to_nonterminal_node(self, node: Union[str, Node]) -> NonterminalNode:
         if type(node) is str:
