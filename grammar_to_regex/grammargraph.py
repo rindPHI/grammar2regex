@@ -5,8 +5,8 @@ from typing import List, Dict, Callable, Union
 import pydot
 from fuzzingbook.Grammars import nonterminals, is_nonterminal
 
-Nonterminal = str
-Grammar = Dict[Nonterminal, List[str]]
+from grammar_to_regex.helpers import split_expansion
+from grammar_to_regex.type_defs import Grammar
 
 
 class Node:
@@ -190,7 +190,7 @@ class GrammarGraph:
             nonterminal_nodes[label] = new_node
 
             for nr, expansion in enumerate(grammar[label]):
-                expansion_elements = split_expansion(nonterminals(expansion), expansion)
+                expansion_elements = split_expansion(expansion)
                 expansion_children_nodes = []
                 for elem in expansion_elements:
                     if elem == label:
@@ -202,13 +202,3 @@ class GrammarGraph:
             return new_node
 
         return GrammarGraph(recurse("<start>"))
-
-
-def split_expansion(nonterminal_symbols: List[str], expansion: str) -> List[str]:
-    if not nonterminal_symbols:
-        return [expansion]
-
-    for nonterminal_symbol in nonterminal_symbols:
-        expansion = re.sub(f"({re.escape(nonterminal_symbol)})", '[cut]\\1[cut]', expansion)
-
-    return [s for s in expansion.split("[cut]") if s]

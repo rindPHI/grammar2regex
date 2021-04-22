@@ -48,6 +48,10 @@
         },
         "stringsampler": {
             "hashes": [
+                "sha256:0b7f3fa57795eb162e5b238aac63a24b82845f3db4980a6dc5fb5c9e98cee727",
+                "sha256:53d22a54e77a073e6f895717af7666caac33b1a8c4b28114571f8ee1c4e2995d",
+                "sha256:8eaa91165035aacf7dcc777c5d85d3c96aff3686a25ab0960a20fef03b1432c6",
+                "sha256:c714cd3021132798138a35737615bd08921f86631d5507262d11c4d0c74a46cc",
                 "sha256:dba90000ade1761c1afc8f962cb7b0022819d3d003d102e33936488e8b1f7cef",
                 "sha256:fea98c75b524a48a3c49c7451c89fb07bb8573dfc52ed714c6381ee42535fc46"
             ],

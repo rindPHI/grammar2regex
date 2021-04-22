@@ -1,15 +1,13 @@
 import logging
 import unittest
-from typing import List
 
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR
-from fuzzingbook.Parser import EarleyParser, State
-from string_sampler import StringSampler, FastFeedbackParser, StringSamplerConfiguration
+from fuzzingbook.Parser import EarleyParser
+from string_sampler.sampler import StringSampler, StringSamplerConfiguration
 
-from cfg2regex import RegexConverter, GrammarType
-from nfa import NFA
+from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
 
 RIGHT_LINEAR_TOY_GRAMMAR = \
     {"<start>": ["<A>"],
@@ -61,28 +59,22 @@ class TestRegexConverter(unittest.TestCase):
         self.assertEqual(z3.unsat, self.smt_check(z3.InRe("(200)200-000", regex)))
 
     def test_us_phone_grammar_to_regex(self):
+        logging.basicConfig(level=logging.INFO)
         checker = RegexConverter(US_PHONE_GRAMMAR)
-        regex = checker.regular_grammar_to_regex("<start>")
+        regex = checker.right_linear_grammar_to_regex("<start>")
 
-        fuzzer = GrammarCoverageFuzzer(US_PHONE_GRAMMAR)
-        parser = fast_feedback_parser(EarleyParser(US_PHONE_GRAMMAR))
-
-        self.check_grammar_regex_equivalence(fuzzer, parser, regex)
+        self.check_grammar_regex_equivalence(US_PHONE_GRAMMAR, regex)
 
     def test_toy_grammar_to_nfa(self):
         checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
-        checker.regular_grammar_to_nfa("<A>")
+        checker.right_linear_grammar_to_nfa("<A>")
         # No Exception
 
     def test_toy_grammar_to_regex(self):
         checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
-        grammar = checker.grammar_graph.subgraph("<A>").to_grammar()
-        regex = checker.regular_grammar_to_regex("<A>")
+        regex = checker.right_linear_grammar_to_regex("<A>")
 
-        fuzzer = GrammarCoverageFuzzer(grammar)
-        parser = fast_feedback_parser(EarleyParser(grammar))
-
-        self.check_grammar_regex_equivalence(fuzzer, parser, regex)
+        self.check_grammar_regex_equivalence(RIGHT_LINEAR_TOY_GRAMMAR, regex)
 
     def test_simple_toy_grammar_to_regex(self):
         grammar = {
@@ -93,28 +85,37 @@ class TestRegexConverter(unittest.TestCase):
         }
 
         checker = RegexConverter(grammar)
-        regex = checker.regular_grammar_to_regex("<A>")
+        regex = checker.right_linear_grammar_to_regex("<A>")
 
-        fuzzer = GrammarCoverageFuzzer(grammar)
-        parser = fast_feedback_parser(EarleyParser(grammar))
+        self.check_grammar_regex_equivalence(grammar, regex)
 
-        self.check_grammar_regex_equivalence(fuzzer, parser, regex)
+    def test_left_linear_to_regex(self):
+        grammar = {
+            "<start>": ["<A>"],
+            "<A>": ["<B>a", "<A>b", "b"],
+            "<B>": ["<C>a", "<B>b"],
+            "<C>": ["<A>a", "<C>b"]
+        }
+
+        checker = RegexConverter(grammar)
+        regex = checker.left_linear_grammar_to_regex("<A>")
+
+        self.check_grammar_regex_equivalence(grammar, regex)
 
     def test_json_string_to_regex(self):
         logging.basicConfig(level=logging.DEBUG)
         converter = RegexConverter(JSON_GRAMMAR)
         grammar = converter.grammar_graph.subgraph("<string>").to_grammar()
-        regex = converter.regular_grammar_to_regex("<string>")
+        regex = converter.right_linear_grammar_to_regex("<string>")
 
-        fuzzer = GrammarCoverageFuzzer(grammar)
-        parser = fast_feedback_parser(EarleyParser(grammar))
-
-        self.check_grammar_regex_equivalence(fuzzer, parser, regex)
+        self.check_grammar_regex_equivalence(grammar, regex)
 
     def check_grammar_regex_equivalence(self,
-                                        fuzzer: GrammarCoverageFuzzer,
-                                        parser: FastFeedbackParser,
+                                        grammar: Grammar,
                                         regex: z3.ReRef):
+        fuzzer = GrammarCoverageFuzzer(grammar)
+        parser = EarleyParser(grammar)
+
         for _ in range(100):
             inp = fuzzer.fuzz()
             solver = z3.Solver()
@@ -123,43 +124,28 @@ class TestRegexConverter(unittest.TestCase):
 
         sampler = StringSampler(
             z3.InRe(z3.String("var"), regex),
-            generators={"var": lambda: fuzzer.fuzz()},
-            parsers={"var": parser},
+            grammars={"var": grammar},
             config=StringSamplerConfiguration(reuse_initial_solution=True)
         )
 
         num_inputs = 0
         for new_assignments in sampler.get_solutions():
-            if num_inputs >= 100:
-                break
-
             num_inputs += len(new_assignments)
             for new_assignment in new_assignments:
                 for _, new_input in new_assignment.items():
-                    self.assertEqual(FastFeedbackParser.Feedback.VALID, parser(new_input),
-                                     f"Input {new_input} not in language")
+                    try:
+                        list(parser.parse(new_input))[0]
+                    except SyntaxError:
+                        self.fail(f"Input {new_input} not in language")
+
+            if num_inputs >= 100:
+                break
 
     @staticmethod
     def smt_check(formula):
         solver = z3.Solver()
         solver.add(formula)
         return solver.check()
-
-
-def fast_feedback_parser(parser: EarleyParser) -> FastFeedbackParser:
-    def run(inp: str) -> FastFeedbackParser.Feedback:
-        states: List[State] = parser.chart_parse(inp, parser.start_symbol())[-1].states
-
-        if not states:
-            return FastFeedbackParser.Feedback.INVALID
-        elif states[-1].finished():
-            return FastFeedbackParser.Feedback.VALID
-        else:
-            return FastFeedbackParser.Feedback.INCOMPLETE
-
-    result = FastFeedbackParser()
-    result.run = run
-    return result
 
 
 if __name__ == '__main__':

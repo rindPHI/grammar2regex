@@ -1,16 +1,14 @@
 import logging
-import random
 from enum import Enum
 from typing import Dict, List, Tuple, Union, Generator
 
 import itertools
 import z3
 
-from nfa import NFA, Transition
-from grammargraph import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
-
-Nonterminal = str
-Grammar = Dict[Nonterminal, List[str]]
+from grammar_to_regex.grammargraph import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
+from grammar_to_regex.helpers import reverse_grammar
+from grammar_to_regex.nfa import NFA, Transition
+from grammar_to_regex.type_defs import Grammar
 
 
 class GrammarType(Enum):
@@ -39,22 +37,41 @@ def re_concat(*regular_expressions: z3.ReRef) -> z3.ReRef:
 
 class RegexConverter:
     def __init__(self, grammar):
-        self.grammar = grammar
-        self.grammar_type = GrammarType.UNDET
-        self.grammar_graph = GrammarGraph.from_grammar(grammar)
+        self.grammar: Grammar = grammar
+        self.grammar_type: GrammarType = GrammarType.UNDET
+        self.grammar_graph: GrammarGraph = GrammarGraph.from_grammar(grammar)
         self.logger = logging.Logger("RegexConverter")
 
-    def regular_grammar_to_regex(self, node: Union[str, Node], nfa: Union[NFA, None] = None) -> z3.ReRef:
+    def left_linear_grammar_to_regex(self, node_symbol: Union[str, Node]) -> z3.ReRef:
+        node = self.str_to_nonterminal_node(node_symbol)
+        self.assert_regular(node)
+        assert self.grammar_type == GrammarType.LEFT_LINEAR
+
+        old_grammar_graph = self.grammar_graph
+        self.grammar_graph = GrammarGraph.from_grammar(reverse_grammar(self.grammar))
+        # Grammar represented by graph is right-linear now
+
+        nfa = self.right_linear_grammar_to_nfa(node_symbol)
+        assert nfa is not None
+        nfa = nfa.reverse()
+
+        self.grammar_graph = old_grammar_graph
+        return self.nfa_to_regex(nfa)
+
+    def right_linear_grammar_to_regex(self, node: Union[str, Node]) -> z3.ReRef:
+        node = self.str_to_nonterminal_node(node)
+        self.assert_regular(node)
+        assert self.grammar_type != GrammarType.LEFT_LINEAR
+
+        nfa = self.right_linear_grammar_to_nfa(node)
+        assert nfa is not None
+
+        return RegexConverter.nfa_to_regex(nfa)
+
+    @staticmethod
+    def nfa_to_regex(nfa: Union[NFA, None]) -> z3.ReRef:
         def label_from_singleton_tr(transitions: List[Transition]) -> Union[None, z3.ReRef]:
             return None if not transitions else transitions[0][1]
-
-        node = self.str_to_nonterminal_node(node)
-        self.assert_right_linear(node)
-
-        # Can set nfa for testing reasons
-        if nfa is None:
-            nfa = self.regular_grammar_to_nfa(node)
-            assert nfa is not None
 
         while len(nfa.states) > 2:
             s = [state for state in nfa.states if state not in (nfa.initial_state, nfa.final_state)][0]
@@ -118,20 +135,19 @@ class RegexConverter:
         else:
             return next(iter(nfa.transitions))[1]
 
-    def assert_right_linear(self, node):
+    def assert_regular(self, node):
+        """Asserts that the sub grammar at node is regular. Has a side effect: self.grammar_type is set!"""
         assert self.is_regular(node), f"The sub grammar at node {node.symbol} is not regular " \
                                       f"and cannot be converted to an NFA."
-        assert self.grammar_type == GrammarType.LEFT_LINEAR, \
-            "Left-linear grammars are currently not supported."
 
-    def regular_grammar_to_nfa(self, node: Union[str, Node]) -> NFA:
+    def right_linear_grammar_to_nfa(self, node: Union[str, Node]) -> NFA:
         # TODO: Only works for epsilon-free grammars...
         #       http://www.cs.um.edu.mt/gordon.pace/Research/Software/Relic/Transformations/RG/toFSA.html
-        # TODO: For left-linear grammars, have to invert the grammar and then the resulting DFA
-        # TODO: Currently, we're computing an NFA. Have to turn this into DFA later. DO WE?
+        #       Really???
 
         node = self.str_to_nonterminal_node(node)
-        self.assert_right_linear(node)
+        self.assert_regular(node)
+        assert self.grammar_type != GrammarType.LEFT_LINEAR
 
         nfa = NFA()
         final_state = "[final]"
@@ -167,7 +183,7 @@ class RegexConverter:
                         if self.grammar_graph.subgraph(child).is_tree():
                             nfa.add_transition(current_state, self.tree_to_regex(child), next_state)
                         else:
-                            sub_dfa = self.regular_grammar_to_nfa(child)
+                            sub_dfa = self.right_linear_grammar_to_nfa(child)
                             sub_dfa.substitute_final_state(next_state)
                             nfa.add_transitions(sub_dfa.transitions)
                             if (current_state, z3.Re(""), sub_dfa.initial_state) not in nfa.transitions:

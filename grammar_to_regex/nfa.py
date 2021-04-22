@@ -110,6 +110,14 @@ class NFA:
         for transition in transitions:
             self.delete_transition(*transition)
 
+    def reverse(self):
+        """Reverses the transitions of the NFA. Useful for conversion of a left-linear grammar to regex."""
+        new_transitions = {(to_state, letter, from_state) for (from_state, letter, to_state) in self.transitions}
+        return NFA(states=tuple(self.states),
+                   initial_state=self.final_state,
+                   final_state=self.initial_state,
+                   transitions=new_transitions)
+
     def to_dot(self):
         graph = pydot.Dot('DFA', graph_type='digraph')
 
