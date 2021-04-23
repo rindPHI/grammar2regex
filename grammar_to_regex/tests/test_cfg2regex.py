@@ -126,6 +126,7 @@ class TestRegexConverter(unittest.TestCase):
         converter = RegexConverter(JSON_GRAMMAR, max_num_expansions=20)
 
         regex = converter.to_regex("<start>")
+        print(regex)
 
         self.check_grammar_regex_inclusion(regex, JSON_GRAMMAR, allowed_failure_percentage=5)
 

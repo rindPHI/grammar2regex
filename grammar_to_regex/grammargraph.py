@@ -189,9 +189,14 @@ class GrammarGraph:
             new_node = NonterminalNode(label, children_nodes)
             nonterminal_nodes[label] = new_node
 
+            assert grammar[label], f"Grammar has no rules for {label}"
             for nr, expansion in enumerate(grammar[label]):
-                expansion_elements = split_expansion(expansion)
                 expansion_children_nodes = []
+                if len(expansion) == 0:
+                    # Expansion is the empty string
+                    expansion_children_nodes.append(recurse(expansion))
+
+                expansion_elements = split_expansion(expansion)
                 for elem in expansion_elements:
                     if elem == label:
                         expansion_children_nodes.append(new_node)

@@ -66,8 +66,9 @@ class TestHelpers(unittest.TestCase):
             JSON_GRAMMAR,
             "<symbol-1>",
             20,
-            {'<exp>', '<character-1>', '<digits>', '<character>', '<int>', '<digit>', '<characters>',
-             '<onenine>', '<digit-1>', '<frac>', '<ws>', '<number>', '<sign>', '<string>'})
+            {'<digits>', '<character>', '<sign>', '<string>', '<int>', '<ws>', '<digit-1>', '<characters>',
+             '<character-1>', '<exp>', '<frac>', '<number>', '<digit>', '<onenine>'}
+        )
 
         new_grammar = copy.deepcopy(JSON_GRAMMAR)
 

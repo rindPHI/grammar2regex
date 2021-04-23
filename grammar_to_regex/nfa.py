@@ -8,6 +8,7 @@ State = TypeVar('State')
 Letter = TypeVar('Letter')
 Transition = Tuple[State, Letter, State]
 
+
 class NFA:
     def __init__(self,
                  states: Tuple[State, ...] = (),
@@ -87,16 +88,17 @@ class NFA:
                 self.delete_transition(from_state, letter, to_state)
                 self.add_transition(from_state, letter, new_final_state)
 
-    def add_transition(self, from_state: State, letter: Letter, to_state: State):
+    def add_transition(self, from_state: State, letter: Letter, to_state: State, safe: bool = True):
         # assert (from_state, letter) not in self.transitions  # <-- for DFA
-        assert (from_state, letter, to_state) not in self.transitions
+        if safe:
+            assert (from_state, letter, to_state) not in self.transitions
         self.transitions.add((from_state, letter, to_state))
         self.successor_map[from_state].add(to_state)
         self.predecessor_map[to_state].add(from_state)
 
-    def add_transitions(self, transitions: Iterable[Transition]):
+    def add_transitions(self, transitions: Iterable[Transition], safe: bool = True):
         for transition in transitions:
-            self.add_transition(*transition)
+            self.add_transition(*transition, safe)
 
     def delete_transition(self, from_state: State, letter: Letter, to_state: State):
         assert (from_state, letter, to_state) in self.transitions

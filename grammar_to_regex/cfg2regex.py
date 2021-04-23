@@ -53,8 +53,11 @@ class RegexConverter:
         self.grammar_type: GrammarType = GrammarType.UNDET
         self.grammar_graph: GrammarGraph = GrammarGraph.from_grammar(grammar)
 
-        self.regularity_cache: Union[None, Dict[str, bool]] = {}
+        self.regularity_cache: Dict[str, bool] = {}
         self.regularity_cache_created_for: Grammar = grammar
+
+        self.nfa_cache: Dict[str, NFA] = {}
+        self.nfa_cache_created_for: Grammar = grammar
 
         self.logger = logging.getLogger("RegexConverter")
 
@@ -73,8 +76,6 @@ class RegexConverter:
         elif self.grammar_graph.subgraph(node).is_tree():
             return self.tree_to_regex(node)
 
-        print("\n".join(map(str, self.grammar.items())))
-
         # NOTE: We have to use node_symbol below, because node is still from the old,
         #       not unwound / nonregular grammar graph.
         if self.grammar_type == GrammarType.LEFT_LINEAR:
@@ -87,16 +88,20 @@ class RegexConverter:
         self.assert_regular(node)
         assert self.grammar_type == GrammarType.LEFT_LINEAR
 
+        self.logger.info("Reversing left-linear grammar for NFA conversion.")
         old_grammar_graph = self.grammar_graph
         self.grammar_graph = GrammarGraph.from_grammar(reverse_grammar(self.grammar))
         # Grammar represented by graph is right-linear now
 
         nfa = self.right_linear_grammar_to_nfa(node_symbol)
         assert nfa is not None
+
+        self.logger.info("Reversing NFA created for reversed left-linear grammar")
         nfa = nfa.reverse()
 
         self.grammar_graph = old_grammar_graph
-        return self.nfa_to_regex(nfa)
+        self.logger.info(f"Converting NFA of sub grammar for {node_symbol} to regex")
+        return RegexConverter.nfa_to_regex(nfa)
 
     def right_linear_grammar_to_regex(self, node: Union[str, Node]) -> z3.ReRef:
         node = self.str_to_nonterminal_node(node)
@@ -106,6 +111,7 @@ class RegexConverter:
         nfa = self.right_linear_grammar_to_nfa(node)
         assert nfa is not None
 
+        self.logger.info(f"Converting NFA of sub grammar for {node.symbol} to regex")
         return RegexConverter.nfa_to_regex(nfa)
 
     @staticmethod
@@ -178,6 +184,14 @@ class RegexConverter:
     def right_linear_grammar_to_nfa(self, node: Union[str, Node]) -> NFA:
         node = self.str_to_nonterminal_node(node)
         self.assert_regular(node)
+
+        if self.nfa_cache_created_for == self.grammar and node.symbol in self.nfa_cache:
+            return self.nfa_cache[node.symbol]
+        elif self.nfa_cache_created_for != self.grammar:
+            self.nfa_cache_created_for = self.grammar
+            self.nfa_cache = {}
+
+        self.logger.info(f"Converting sub grammar for nonterminal {node.symbol} to NFA")
         assert self.grammar_type != GrammarType.LEFT_LINEAR
 
         nfa = NFA()
@@ -202,6 +216,7 @@ class RegexConverter:
             choice_node: ChoiceNode
             for choice_node in node.children:
                 children = choice_node.children
+                assert children, "Choice node has no children, but always should have."
                 current_state = node.quote_symbol()
 
                 for child in children[0:-1]:
@@ -214,11 +229,25 @@ class RegexConverter:
                         if self.grammar_graph.subgraph(child).is_tree():
                             nfa.add_transition(current_state, self.tree_to_regex(child), next_state)
                         else:
-                            sub_dfa = self.right_linear_grammar_to_nfa(child)
-                            sub_dfa.substitute_final_state(next_state)
-                            nfa.add_transitions(sub_dfa.transitions)
-                            if (current_state, z3.Re(""), sub_dfa.initial_state) not in nfa.transitions:
-                                nfa.add_transition(current_state, z3.Re(""), sub_dfa.initial_state)
+                            if child in self.nfa_cache:
+                                sub_nfa = self.nfa_cache[child.symbol]
+                            else:
+                                sub_nfa = self.right_linear_grammar_to_nfa(child)
+                                self.nfa_cache[child.symbol] = sub_nfa
+
+                            sub_nfa.substitute_final_state(next_state)
+
+                            for state in sub_nfa.states:
+                                if state not in nfa.states:
+                                    nfa.add_state(state)
+
+                            # Note: The NFAs might overlap, if elements reference the same nonterminals.
+                            # Therefore, we add transitions "unsafely", i.e., ignore if some transitions
+                            # from sub_nfa are already present in nfa.
+                            nfa.add_transitions(sub_nfa.transitions, safe=False)
+
+                            if (current_state, z3.Re(""), sub_nfa.initial_state) not in nfa.transitions:
+                                nfa.add_transition(current_state, z3.Re(""), sub_nfa.initial_state)
 
                     current_state = next_state
 
@@ -227,18 +256,22 @@ class RegexConverter:
                 if type(child) is TerminalNode:
                     nfa.add_transition(current_state, z3.Re(child.symbol), final_state)
                 else:
-                    nfa.add_transition(current_state, z3.Re(""), child.quote_symbol())
+                    nfa.add_transition(current_state, z3.Re(""), child.quote_symbol(), safe=False)
                     if child not in visited:
                         visited.append(child)
                         queue.append(child)
 
         nfa.delete_isolated_states()
 
-        for p, q in itertools.product(nfa.states, nfa.states):
+        # Bundle transitions between the same states
+        # for p, q in itertools.product(nfa.states, nfa.states):
+        for p, q in [(p, q) for p, _, q in nfa.transitions]:
             transitions = nfa.transitions_between(p, q)
             if len(transitions) >= 1:
                 nfa.delete_transitions(transitions)
                 nfa.add_transition(p, z3.Union(*[l for (_, l, _) in transitions]), q)
+
+        self.nfa_cache[node.symbol] = nfa
 
         return nfa
 
@@ -297,10 +330,15 @@ class RegexConverter:
             nonterminal_to_expand: Nonterminal
             nonterminal_to_expand = expansion[nonterminal_idx]
             assert type(nonterminal_to_expand) is Nonterminal
+            assert str(nonterminal_to_expand) not in allowed_symbols, f"Symbol {nonterminal_to_expand} is " \
+                                                                      f"an allowed symbol and shouldn't be " \
+                                                                      f"expanded!"
+
+            self.logger.info(f"Unwinding nonterminal {nonterminal_idx + 1} ({nonterminal_to_expand}) in "
+                             f"{expansion_idx + 1}. expansion rule of {nonterminal}")
 
             expansions: List[List[GrammarElem]]
             if nonterminal_to_expand in replacements:
-                print("Found existing replacement")  # TODO Test code, remove
                 expansions = replacements[nonterminal_to_expand]
             else:
                 self.logger.debug(f"Expanding nonterminal {nonterminal_to_expand}")
@@ -308,6 +346,7 @@ class RegexConverter:
                                                  str(nonterminal_to_expand),
                                                  self.max_num_expansions,
                                                  allowed_symbols)
+                assert expansions
                 replacements[nonterminal_to_expand] = expansions
 
             new_expansions: List[List[GrammarElem]] = list([])
@@ -326,7 +365,9 @@ class RegexConverter:
             for idx, new_expansion in enumerate(expansions):
                 for other_expansion_index, other_nonterminal_index in [
                     (other_expansion_index, other_nonterminal_index)
-                    for (_, other_expansion_index, other_nonterminal_index) in old_problematic_expansions
+                    for (other_nonterminal, other_expansion_index, other_nonterminal_index)
+                    in old_problematic_expansions
+                    if nonterminal == other_nonterminal
                     if other_expansion_index >= expansion_idx
                 ]:
                     if (nonterminal, other_expansion_index, other_nonterminal_index) in problematic_expansions:
@@ -337,11 +378,22 @@ class RegexConverter:
 
                     if other_nonterminal_index >= nonterminal_idx:
                         new_nonterminal_index = other_nonterminal_index + len(new_expansion) - 1
-                        assert new_nonterminal_index < len(canonical_grammar[nonterminal][new_expansion_index])
-
-                        problematic_expansions.add((nonterminal, new_expansion_index, new_nonterminal_index))
                     else:
-                        problematic_expansions.add((nonterminal, new_expansion_index, other_nonterminal_index))
+                        new_nonterminal_index = other_nonterminal_index
+
+                    assert new_nonterminal_index < len(canonical_grammar[nonterminal][new_expansion_index]), \
+                        "Invalid nonterminal index produced."
+
+                    new_problemantic_element = \
+                        canonical_grammar[nonterminal][new_expansion_index][new_nonterminal_index]
+                    assert type(new_problemantic_element) is Nonterminal, \
+                        f"Symbol {new_problemantic_element} is " \
+                        f"a terminal symbol and can thus not be problematic."
+                    assert str(new_problemantic_element) not in allowed_symbols, \
+                        f"Symbol {new_problemantic_element} is an " \
+                        f"allowed nonterminal and can thus not be problematic."
+
+                    problematic_expansions.add((nonterminal, new_expansion_index, new_nonterminal_index))
 
         result = typed_canonical_to_grammar(canonical_grammar)
         delete_unreachable(result)
@@ -367,16 +419,14 @@ class RegexConverter:
 
         nonterminal_str = nonterminal if type(nonterminal) is str else nonterminal.symbol
 
-        if self.regularity_cache is not None:
-            if self.regularity_cache_created_for == self.grammar and nonterminal_str in self.regularity_cache:
-                print("Cache hit!")
-                return self.regularity_cache[nonterminal_str]
-            elif self.regularity_cache_created_for != self.grammar:
-                self.regularity_cache = {}
+        if self.regularity_cache_created_for == self.grammar and nonterminal_str in self.regularity_cache:
+            return self.regularity_cache[nonterminal_str]
+        elif self.regularity_cache_created_for != self.grammar:
+            self.regularity_cache_created_for = self.grammar
+            self.regularity_cache = {}
 
         result = not self.nonregular_expansions(nonterminal)
 
-        self.regularity_cache_created_for = self.grammar
         self.regularity_cache[nonterminal_str] = result
 
         return result
@@ -457,7 +507,7 @@ class RegexConverter:
                 else:
                     problems.add((nonterminal.symbol, choice_node_index, backlink_position))
 
-        all_nontree_children_nonterminals = set([])
+        all_nontree_children_nonterminals = OrderedSet([])
         for choice_node in nonterminal.children:
             for child in choice_node.children:
                 if type(child) is NonterminalNode and not self.grammar_graph.subgraph(child).is_tree():
