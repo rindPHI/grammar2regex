@@ -1,4 +1,4 @@
 from typing import Dict, List
 
-Nonterminal = str
-Grammar = Dict[Nonterminal, List[str]]
+NonterminalType = str
+Grammar = Dict[NonterminalType, List[str]]

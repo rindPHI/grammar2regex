@@ -5,12 +5,14 @@ from typing import Dict, List, Tuple, Union, Generator, Set
 
 import itertools
 import z3
+from fuzzingbook.Parser import canonical
 from orderedset import OrderedSet
 
 from grammar_to_regex.grammargraph import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
-from grammar_to_regex.helpers import reverse_grammar, split_expansion, expand_nonterminals, delete_unreachable
+from grammar_to_regex.helpers import reverse_grammar, split_expansion, expand_nonterminals, delete_unreachable, \
+    grammar_to_typed_canonical, GrammarElem, str2grammar_elem, Nonterminal, typed_canonical_to_grammar
 from grammar_to_regex.nfa import NFA, Transition
-from grammar_to_regex.type_defs import Grammar, Nonterminal
+from grammar_to_regex.type_defs import Grammar, NonterminalType
 
 
 class GrammarType(Enum):
@@ -51,7 +53,34 @@ class RegexConverter:
         self.grammar_type: GrammarType = GrammarType.UNDET
         self.grammar_graph: GrammarGraph = GrammarGraph.from_grammar(grammar)
 
-        self.logger = logging.Logger("RegexConverter")
+        self.regularity_cache: Union[None, Dict[str, bool]] = {}
+        self.regularity_cache_created_for: Grammar = grammar
+
+        self.logger = logging.getLogger("RegexConverter")
+
+    def to_regex(self, node_symbol: Union[str, Node]) -> z3.ReRef:
+        node = self.str_to_nonterminal_node(node_symbol)
+        self.logger.info("Computing nonregular expansions.")
+        problematic_expansions: OrderedSet[Tuple[NonterminalType, int, int]] = self.nonregular_expansions(node)
+
+        if problematic_expansions:
+            self.logger.info(f"Grammar found to be non-regular, unwinding {len(problematic_expansions)} expansion "
+                             f"elements to depth {self.max_num_expansions}")
+            unwound_grammar = self.unwind_grammar(problematic_expansions)
+            self.grammar = unwound_grammar
+            self.grammar_graph = GrammarGraph.from_grammar(unwound_grammar)
+            self.logger.info("Done unwinding.")
+        elif self.grammar_graph.subgraph(node).is_tree():
+            return self.tree_to_regex(node)
+
+        print("\n".join(map(str, self.grammar.items())))
+
+        # NOTE: We have to use node_symbol below, because node is still from the old,
+        #       not unwound / nonregular grammar graph.
+        if self.grammar_type == GrammarType.LEFT_LINEAR:
+            return self.left_linear_grammar_to_regex(node_symbol)
+        else:
+            return self.right_linear_grammar_to_regex(node_symbol)
 
     def left_linear_grammar_to_regex(self, node_symbol: Union[str, Node]) -> z3.ReRef:
         node = self.str_to_nonterminal_node(node_symbol)
@@ -241,73 +270,80 @@ class RegexConverter:
         else:
             return z3.Union(*union_nodes)
 
-    def unwind_grammar(self, problematic_expansions: List[Tuple[Nonterminal, int, int]]) -> Grammar:
+    def unwind_grammar(self,
+                       problematic_expansions_str: OrderedSet[Tuple[NonterminalType, int, int]]) -> Grammar:
         """Unwinds the given problematic expansions up to self.max_num_expansions times. In the result, only
         terminal symbols or nonterminals that are root of a tree in the grammar graph are allowed."""
 
-        result: Grammar = copy.deepcopy(self.grammar)
+        canonical_grammar: Dict[GrammarElem, List[List[GrammarElem]]] = \
+            grammar_to_typed_canonical(self.grammar)
+        replacements: Dict[GrammarElem, List[List[GrammarElem]]] = dict([])
+        problematic_expansions: OrderedSet[Tuple[GrammarElem, int, int]] = \
+            OrderedSet([(str2grammar_elem(nonterminal_str), idx_1, idx_2)
+                        for nonterminal_str, idx_1, idx_2 in problematic_expansions_str])
+
+        allowed_symbols = {str(nonterminal) for nonterminal in self.grammar.keys() if
+                           # self.grammar_graph.subgraph(nonterminal).is_tree()
+                           self.is_regular(str(nonterminal))
+                           }
 
         while problematic_expansions:
+            nonterminal: Nonterminal
+            expansion_idx: int
+            nonterminal_idx: int
             nonterminal, expansion_idx, nonterminal_idx = problematic_expansions.pop()
 
-            expansion = result[nonterminal][expansion_idx]
-            expansion_elements = split_expansion(expansion)
-            nonterminal_to_expand = expansion_elements[nonterminal_idx]
+            expansion = canonical_grammar[nonterminal][expansion_idx]
+            nonterminal_to_expand: Nonterminal
+            nonterminal_to_expand = expansion[nonterminal_idx]
+            assert type(nonterminal_to_expand) is Nonterminal
 
-            tree_like_symbols = {nonterminal for nonterminal in self.grammar.keys() if
-                                 self.grammar_graph.subgraph(nonterminal).is_tree()}
+            expansions: List[List[GrammarElem]]
+            if nonterminal_to_expand in replacements:
+                print("Found existing replacement")  # TODO Test code, remove
+                expansions = replacements[nonterminal_to_expand]
+            else:
+                self.logger.debug(f"Expanding nonterminal {nonterminal_to_expand}")
+                expansions = expand_nonterminals(self.grammar,
+                                                 str(nonterminal_to_expand),
+                                                 self.max_num_expansions,
+                                                 allowed_symbols)
+                replacements[nonterminal_to_expand] = expansions
 
-            expansions = expand_nonterminals(self.grammar, nonterminal_to_expand, self.max_num_expansions,
-                                             tree_like_symbols)
+            new_expansions: List[List[GrammarElem]] = list([])
 
-            if len(expansions) != 1:
-                # Update expansion_idx references for problematic expansions with the same nonterminal
-                other_problem: Tuple[Nonterminal, int, int]
-                for other_problem in [problem for problem in list(problematic_expansions)
-                                      if problem[0] == nonterminal and
-                                         problem[1] >= expansion_idx]:
-                    _, other_expansion_idx, other_nonterminal_idx = other_problem
-                    if other_expansion_idx > expansion_idx:
-                        problematic_expansions.remove((nonterminal, other_expansion_idx, other_nonterminal_idx))
-                        problematic_expansions.append((nonterminal,
-                                                    other_expansion_idx + len(expansions) - 1,
-                                                    other_nonterminal_idx))
-                    if other_expansion_idx == expansion_idx:
-                        problematic_expansions.remove((nonterminal, other_expansion_idx, other_nonterminal_idx))
-                        for i in range(len(expansions)):
-                            problematic_expansions.append((nonterminal,
-                                                        other_expansion_idx + i,
-                                                        other_nonterminal_idx))
+            for idx, new_expansion in enumerate(expansions):
+                to_add = expansion[:nonterminal_idx] + new_expansion + expansion[nonterminal_idx + 1:]
+                if to_add not in new_expansions:
+                    new_expansions.append(to_add)
 
-            new_expansions: List[str] = []
+            canonical_grammar[nonterminal] = (canonical_grammar[nonterminal][:expansion_idx] +
+                                              new_expansions +
+                                              canonical_grammar[nonterminal][expansion_idx + 1:])
 
-            for new_expansion in expansions:
-                new_expansions.append("".join(expansion_elements[:nonterminal_idx] +
-                                              [new_expansion] +
-                                              expansion_elements[nonterminal_idx + 1:]))
+            # Update remaining problem pointers
+            old_problematic_expansions = OrderedSet(problematic_expansions)
+            for idx, new_expansion in enumerate(expansions):
+                for other_expansion_index, other_nonterminal_index in [
+                    (other_expansion_index, other_nonterminal_index)
+                    for (_, other_expansion_index, other_nonterminal_index) in old_problematic_expansions
+                    if other_expansion_index >= expansion_idx
+                ]:
+                    if (nonterminal, other_expansion_index, other_nonterminal_index) in problematic_expansions:
+                        problematic_expansions.remove((nonterminal, other_expansion_index, other_nonterminal_index))
 
-                num_new_expansion_elements = 0 if not new_expansion else len(split_expansion(new_expansion))
+                    new_expansion_index = other_expansion_index + idx
+                    assert new_expansion_index < len(canonical_grammar[nonterminal])
 
-                if num_new_expansion_elements != 1:
-                    # Update nonterminal_idx references for problematic expansions with the same
-                    # nonterminal and expansion index.
-                    for other_problem in [problem for problem in list(problematic_expansions)
-                                          if problem[0] == nonterminal and
-                                             expansion_idx <= problem[1] <= expansion_idx + len(expansions) and
-                                             problem[2] >= nonterminal_idx]:
-                        _, other_expansion_idx, other_nonterminal_idx = other_problem
-                        # assert other_nonterminal_idx > nonterminal_idx, \
-                        #     "There should not be two problems for the same nonterminal occurrence"
+                    if other_nonterminal_index >= nonterminal_idx:
+                        new_nonterminal_index = other_nonterminal_index + len(new_expansion) - 1
+                        assert new_nonterminal_index < len(canonical_grammar[nonterminal][new_expansion_index])
 
-                        problematic_expansions.remove((nonterminal, other_expansion_idx, other_nonterminal_idx))
-                        problematic_expansions.append((nonterminal,
-                                                    other_expansion_idx,
-                                                    other_nonterminal_idx + num_new_expansion_elements - 1))
+                        problematic_expansions.add((nonterminal, new_expansion_index, new_nonterminal_index))
+                    else:
+                        problematic_expansions.add((nonterminal, new_expansion_index, other_nonterminal_index))
 
-            result[nonterminal] = (result[nonterminal][:expansion_idx] +
-                                   list(OrderedSet(new_expansions)) +
-                                   result[nonterminal][expansion_idx + 1:])
-
+        result = typed_canonical_to_grammar(canonical_grammar)
         delete_unreachable(result)
         return result
 
@@ -329,13 +365,27 @@ class RegexConverter:
                  starting in nonterminal is regular.
         """
 
-        return not self.nonregular_expansions(nonterminal)
+        nonterminal_str = nonterminal if type(nonterminal) is str else nonterminal.symbol
+
+        if self.regularity_cache is not None:
+            if self.regularity_cache_created_for == self.grammar and nonterminal_str in self.regularity_cache:
+                print("Cache hit!")
+                return self.regularity_cache[nonterminal_str]
+            elif self.regularity_cache_created_for != self.grammar:
+                self.regularity_cache = {}
+
+        result = not self.nonregular_expansions(nonterminal)
+
+        self.regularity_cache_created_for = self.grammar
+        self.regularity_cache[nonterminal_str] = result
+
+        return result
 
     def nonregular_expansions(self,
                               nonterminal: Union[str, NonterminalNode],
                               call_seq: Tuple = (),
-                              problems: Union[None, Set[Tuple[Nonterminal, int, int]]] = None) -> \
-            Set[Tuple[Nonterminal, int, int]]:
+                              problems: Union[None, OrderedSet[Tuple[NonterminalType, int, int]]] = None) -> \
+            OrderedSet[Tuple[NonterminalType, int, int]]:
         """
         Returns pointers to expansions in a grammar which make the grammar non-regular. Those can then
         be unwound to convert the grammar into a regular grammar which represents a sub language.
@@ -352,7 +402,7 @@ class RegexConverter:
             self.grammar_type = GrammarType.UNDET
 
         if problems is None:
-            problems = set([])
+            problems = OrderedSet([])
 
         if type(nonterminal) is str:
             nonterminal = self.grammar_graph.get_node(nonterminal)
@@ -413,8 +463,13 @@ class RegexConverter:
                 if type(child) is NonterminalNode and not self.grammar_graph.subgraph(child).is_tree():
                     all_nontree_children_nonterminals.add(child)
 
-        return set().union(*[self.nonregular_expansions(child, call_seq + (nonterminal,), problems)
-                             for child in all_nontree_children_nonterminals])
+        result = OrderedSet()
+
+        for child_result in [self.nonregular_expansions(child, call_seq + (nonterminal,), problems)
+                             for child in all_nontree_children_nonterminals]:
+            result |= child_result
+
+        return result
 
     def str_to_nonterminal_node(self, node: Union[str, Node]) -> NonterminalNode:
         if type(node) is str:

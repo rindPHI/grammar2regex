@@ -5,6 +5,8 @@ import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR
 from fuzzingbook.Parser import EarleyParser
+from orderedset import OrderedSet
+from string_sampler.constraint_eval import ConstraintEvaluator
 from string_sampler.sampler import StringSampler, StringSamplerConfiguration
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
@@ -72,7 +74,7 @@ class TestRegexConverter(unittest.TestCase):
         checker = RegexConverter(US_PHONE_GRAMMAR)
         regex = checker.right_linear_grammar_to_regex("<start>")
 
-        self.check_grammar_regex_equivalence(US_PHONE_GRAMMAR, regex)
+        self.check_grammar_regex_inclusion(regex, US_PHONE_GRAMMAR)
 
     def test_toy_grammar_to_nfa(self):
         checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
@@ -83,7 +85,7 @@ class TestRegexConverter(unittest.TestCase):
         checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
         regex = checker.right_linear_grammar_to_regex("<A>")
 
-        self.check_grammar_regex_equivalence(RIGHT_LINEAR_TOY_GRAMMAR, regex)
+        self.check_grammar_regex_inclusion(regex, RIGHT_LINEAR_TOY_GRAMMAR)
 
     def test_simple_toy_grammar_to_regex(self):
         grammar = {
@@ -96,7 +98,7 @@ class TestRegexConverter(unittest.TestCase):
         checker = RegexConverter(grammar)
         regex = checker.right_linear_grammar_to_regex("<A>")
 
-        self.check_grammar_regex_equivalence(grammar, regex)
+        self.check_grammar_regex_inclusion(regex, grammar)
 
     def test_left_linear_to_regex(self):
         grammar = {
@@ -109,7 +111,7 @@ class TestRegexConverter(unittest.TestCase):
         checker = RegexConverter(grammar)
         regex = checker.left_linear_grammar_to_regex("<A>")
 
-        self.check_grammar_regex_equivalence(grammar, regex)
+        self.check_grammar_regex_inclusion(regex, grammar)
 
     def test_json_string_to_regex(self):
         logging.basicConfig(level=logging.DEBUG)
@@ -117,33 +119,42 @@ class TestRegexConverter(unittest.TestCase):
         grammar = converter.grammar_graph.subgraph("<string>").to_grammar()
         regex = converter.right_linear_grammar_to_regex("<string>")
 
-        self.check_grammar_regex_equivalence(grammar, regex)
+        self.check_grammar_regex_inclusion(regex, grammar)
+
+    def test_json_object_to_regex(self):
+        logging.basicConfig(level=logging.DEBUG)
+        converter = RegexConverter(JSON_GRAMMAR, max_num_expansions=20)
+
+        regex = converter.to_regex("<start>")
+
+        self.check_grammar_regex_inclusion(regex, JSON_GRAMMAR, allowed_failure_percentage=5)
 
     def test_unwind_expansion(self):
         grammar = {
             "<start>": ["<A>"],
             "<A>": ["a<B><B><C>"],
-            "<B>": ["b<B>", "c<B>", ""],
+            "<B>": ["<B>b", "<C><B>", ""],
             "<C>": ["c"]
         }
 
-        checker = RegexConverter(grammar, max_num_expansions=5)
-        unwound_grammar = checker.unwind_grammar([("<A>", 0, 2), ("<A>", 0, 1)])
-        self.assertNotIn("<B>", list(unwound_grammar.keys()))
-        TestHelpers.assert_grammar_inclusion(self, unwound_grammar, grammar, allowed_failure_percentage=30)
+        checker = RegexConverter(grammar, max_num_expansions=10)
+        unwound_grammar = checker.unwind_grammar(OrderedSet([("<A>", 0, 2), ("<A>", 0, 1)]))
+        TestHelpers.assert_grammar_inclusion(self, unwound_grammar, grammar, allowed_failure_percentage=5)
 
-    def check_grammar_regex_equivalence(self,
-                                        grammar: Grammar,
-                                        regex: z3.ReRef):
+    def check_grammar_regex_inclusion(self,
+                                      regex: z3.ReRef,
+                                      grammar: Grammar,
+                                      runs: int = 100,
+                                      allowed_failure_percentage: int = 0,
+                                      strict: bool = True):
+        """
+        Asserts that regex is, if allowed_failure_percentage is 0, equivalent to grammar, and otherwise a
+        strict subset of grammar.
+        """
         fuzzer = GrammarCoverageFuzzer(grammar)
         parser = EarleyParser(grammar)
 
-        for _ in range(100):
-            inp = fuzzer.fuzz()
-            solver = z3.Solver()
-            solver.add(z3.InRe(z3.StringVal(inp), regex))
-            self.assertEqual(z3.sat, solver.check(), f"Input {inp} not in regex")
-
+        # regex \subset grammar
         sampler = StringSampler(
             z3.InRe(z3.String("var"), regex),
             grammars={"var": grammar},
@@ -160,8 +171,34 @@ class TestRegexConverter(unittest.TestCase):
                     except SyntaxError:
                         self.fail(f"Input {new_input} not in language")
 
-            if num_inputs >= 100:
+            if num_inputs >= runs:
                 break
+
+        # grammar \subset regex
+
+        fails = 0
+        for _ in range(runs):
+            inp = fuzzer.fuzz()
+            formula = z3.InRe(z3.StringVal(inp), regex)
+            evaluator = ConstraintEvaluator()
+            result = evaluator.eval(formula)
+
+            # solver = z3.Solver()
+            # solver.add(formula)
+            # result = solver.check() == z3.sat
+
+            if not result:
+                if allowed_failure_percentage == 0:
+                    self.assertEqual(True, result, f"Input {inp} not in regex")
+                else:
+                    fails += 1
+
+        if allowed_failure_percentage > 0:
+            self.assertLessEqual(fails, (allowed_failure_percentage / 100) * runs,
+                                 f"There were {(fails / runs) * 100:0.2f}% failures "
+                                 f"({allowed_failure_percentage}% allowed)")
+            if strict:
+                self.assertGreater(fails, 0)
 
     @staticmethod
     def smt_check(formula):
