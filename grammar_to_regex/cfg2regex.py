@@ -101,7 +101,8 @@ class RegexConverter:
 
         self.grammar_graph = old_grammar_graph
         self.logger.info(f"Converting NFA of sub grammar for {node_symbol} to regex")
-        return RegexConverter.nfa_to_regex(nfa)
+
+        return self.nfa_to_regex(nfa)
 
     def right_linear_grammar_to_regex(self, node: Union[str, Node]) -> z3.ReRef:
         node = self.str_to_nonterminal_node(node)
@@ -112,20 +113,31 @@ class RegexConverter:
         assert nfa is not None
 
         self.logger.info(f"Converting NFA of sub grammar for {node.symbol} to regex")
-        return RegexConverter.nfa_to_regex(nfa)
+        return self.nfa_to_regex(nfa)
 
-    @staticmethod
-    def nfa_to_regex(nfa: Union[NFA, None]) -> z3.ReRef:
+    def nfa_to_regex(self, nfa: Union[NFA, None]) -> z3.ReRef:
+        assert not [state for state in nfa.states if not any(
+            [(s1, l, s2) for (s1, l, s2) in nfa.transitions if state in (s1, s2)]
+        )], f"Found isolated states!"
+
         def label_from_singleton_tr(transitions: List[Transition]) -> Union[None, z3.ReRef]:
             return None if not transitions else transitions[0][1]
 
-        while len(nfa.states) > 2:
-            s = [state for state in nfa.states if state not in (nfa.initial_state, nfa.final_state)][0]
+        # It's much faster if we start eliminating states with few predecessors and successors
+        intermediate_states = [state for state in nfa.states if state not in (nfa.initial_state, nfa.final_state)]
+        intermediate_states = sorted(intermediate_states,
+                                     key=lambda s: len(nfa.predecessors(s)) + len(nfa.successors(s)))
+
+        while len(intermediate_states) > 0:
+            s = intermediate_states[0]
 
             predecessors = [p for p in nfa.predecessors(s) if p != s]
             successors = [q for q in nfa.successors(s) if q != s]
             loops = nfa.transitions_between(s, s)
             assert len(loops) <= 1
+
+            self.logger.debug(f"Eliminating state {s} ({len(predecessors)} preds / {len(successors)} succs), "
+                              f"{len(nfa.states)} states left")
 
             E_s_s = label_from_singleton_tr(loops)
             E_s_s_star = None if E_s_s is None else z3.Star(E_s_s)
@@ -155,6 +167,7 @@ class RegexConverter:
 
             nfa.delete_transitions(loops)
             nfa.delete_state(s)
+            intermediate_states.remove(s)
 
         assert len(nfa.states) == 2
 

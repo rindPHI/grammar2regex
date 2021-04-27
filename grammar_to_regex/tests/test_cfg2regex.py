@@ -1,16 +1,24 @@
 import logging
 import unittest
+from os import path
+from typing import Union
 
+import sys
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR
 from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
-from string_sampler.constraint_eval import ConstraintEvaluator
-from string_sampler.sampler import StringSampler, StringSamplerConfiguration
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
 from grammar_to_regex.tests.test_helpers import TestHelpers
+
+# ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
+sys.path.append(path.abspath('../../../StringSMTSampler'))
+# END ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
+
+from string_sampler.constraint_eval import ConstraintEvaluator
+from string_sampler.sampler import StringSampler, StringSamplerConfiguration, InitialSolutionStrategy
 
 RIGHT_LINEAR_TOY_GRAMMAR = \
     {"<start>": ["<A>"],
@@ -126,9 +134,10 @@ class TestRegexConverter(unittest.TestCase):
         converter = RegexConverter(JSON_GRAMMAR, max_num_expansions=20)
 
         regex = converter.to_regex("<start>")
-        print(regex)
 
-        self.check_grammar_regex_inclusion(regex, JSON_GRAMMAR, allowed_failure_percentage=5)
+        self.check_grammar_regex_inclusion(regex, JSON_GRAMMAR, allowed_failure_percentage=5,
+                                           string_sampler_config=StringSamplerConfiguration(
+                                               initial_solution_strategy=InitialSolutionStrategy.SMT_PURE, ))
 
     def test_unwind_expansion(self):
         grammar = {
@@ -147,7 +156,8 @@ class TestRegexConverter(unittest.TestCase):
                                       grammar: Grammar,
                                       runs: int = 100,
                                       allowed_failure_percentage: int = 0,
-                                      strict: bool = True):
+                                      strict: bool = True,
+                                      string_sampler_config: Union[None, StringSamplerConfiguration] = None):
         """
         Asserts that regex is, if allowed_failure_percentage is 0, equivalent to grammar, and otherwise a
         strict subset of grammar.
@@ -155,11 +165,14 @@ class TestRegexConverter(unittest.TestCase):
         fuzzer = GrammarCoverageFuzzer(grammar)
         parser = EarleyParser(grammar)
 
+        if not string_sampler_config:
+            string_sampler_config = StringSamplerConfiguration(reuse_initial_solution=True)
+
         # regex \subset grammar
         sampler = StringSampler(
             z3.InRe(z3.String("var"), regex),
             grammars={"var": grammar},
-            config=StringSamplerConfiguration(reuse_initial_solution=True)
+            config=string_sampler_config
         )
 
         num_inputs = 0
