@@ -1,15 +1,13 @@
-import copy
 import logging
 from enum import Enum
-from typing import Dict, List, Tuple, Union, Generator, Set
+from typing import Dict, List, Tuple, Union, Generator
 
 import itertools
 import z3
-from fuzzingbook.Parser import canonical
+from grammar_graph.gg import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
 from orderedset import OrderedSet
 
-from grammar_to_regex.grammargraph import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
-from grammar_to_regex.helpers import reverse_grammar, split_expansion, expand_nonterminals, delete_unreachable, \
+from grammar_to_regex.helpers import reverse_grammar, expand_nonterminals, delete_unreachable, \
     grammar_to_typed_canonical, GrammarElem, str2grammar_elem, Nonterminal, typed_canonical_to_grammar
 from grammar_to_regex.nfa import NFA, Transition
 from grammar_to_regex.type_defs import Grammar, NonterminalType

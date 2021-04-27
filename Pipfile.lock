@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "535b642219868eda8954c1e475ea556533c3ddd5bb00141aeb8890ceb41dce55"
+            "sha256": "4acf4b9d63e78e4d7bf6fa763c031814db39f17f4c12c1bc46628ef634391728"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -22,6 +22,13 @@
             ],
             "index": "pypi",
             "version": "==0.8.1"
+        },
+        "grammargraph": {
+            "hashes": [
+                "sha256:566120e81291f7fc24cd06185365a0d44f8bfa9ee0b7ea385de273c5ba2f86d6"
+            ],
+            "path": "./../GrammarGraph/dist/grammargraph-0.0.1.tar.gz",
+            "version": "==0.0.1"
         },
         "orderedset": {
             "hashes": [
