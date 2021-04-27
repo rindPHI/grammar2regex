@@ -3,6 +3,7 @@ import unittest
 from os import path
 from typing import Union
 
+import pyperclip
 import sys
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
@@ -30,6 +31,10 @@ RIGHT_LINEAR_TOY_GRAMMAR = \
 
 
 class TestRegexConverter(unittest.TestCase):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.logger = logging.getLogger(type(self).__name__)
+
     def test_toy_grammar_regularity(self):
         grammar = {"<start>": ["<A>"],
                    "<A>": ["<B>a", "<A>b", "b"],
@@ -137,7 +142,9 @@ class TestRegexConverter(unittest.TestCase):
 
         self.check_grammar_regex_inclusion(regex, JSON_GRAMMAR, allowed_failure_percentage=5,
                                            string_sampler_config=StringSamplerConfiguration(
-                                               initial_solution_strategy=InitialSolutionStrategy.SMT_PURE, ))
+                                               initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
+                                               max_size_new_neighborhood=200,
+                                           ))
 
     def test_unwind_expansion(self):
         grammar = {
@@ -171,6 +178,7 @@ class TestRegexConverter(unittest.TestCase):
         # regex \subset grammar
         sampler = StringSampler(
             z3.InRe(z3.String("var"), regex),
+            z3.BoolVal(True),
             grammars={"var": grammar},
             config=string_sampler_config
         )
@@ -178,6 +186,7 @@ class TestRegexConverter(unittest.TestCase):
         num_inputs = 0
         for new_assignments in sampler.get_solutions():
             num_inputs += len(new_assignments)
+            self.logger.debug(f"Generated {num_inputs} instantiations")
             for new_assignment in new_assignments:
                 for _, new_input in new_assignment.items():
                     try:
@@ -190,22 +199,30 @@ class TestRegexConverter(unittest.TestCase):
 
         # grammar \subset regex
 
+        # Evaluator caches compiled regular expressions, have to reuse for performance!
+        # For this example, actually, using z3 is *much* quicker...
+        # evaluator = ConstraintEvaluator()
+
         fails = 0
         for _ in range(runs):
             inp = fuzzer.fuzz()
             formula = z3.InRe(z3.StringVal(inp), regex)
-            evaluator = ConstraintEvaluator()
-            result = evaluator.eval(formula)
+            self.logger.debug(f"Checking whether {inp} is in regex")
 
-            # solver = z3.Solver()
-            # solver.add(formula)
-            # result = solver.check() == z3.sat
+            # result = evaluator.eval(formula)
+
+            solver = z3.Solver()
+            solver.add(formula)
+            result = solver.check() == z3.sat
 
             if not result:
+                self.logger.debug(f"Input {inp} not in regular expression")
                 if allowed_failure_percentage == 0:
                     self.assertEqual(True, result, f"Input {inp} not in regex")
                 else:
                     fails += 1
+
+            self.logger.debug(f"Input {inp} is in regular expression")
 
         if allowed_failure_percentage > 0:
             self.assertLessEqual(fails, (allowed_failure_percentage / 100) * runs,
