@@ -1,8 +1,10 @@
+import copy
 import logging
 from enum import Enum
 from typing import Dict, List, Tuple, Union, Generator
 
 import itertools
+import pyperclip
 import z3
 from grammar_graph.gg import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
 from orderedset import OrderedSet
@@ -60,6 +62,10 @@ class RegexConverter:
         self.logger = logging.getLogger("RegexConverter")
 
     def to_regex(self, node_symbol: Union[str, Node]) -> z3.ReRef:
+        old_grammar = copy.deepcopy(self.grammar)
+        self.grammar_graph = self.grammar_graph.subgraph(node_symbol)
+        self.grammar = self.grammar_graph.to_grammar()
+
         node = self.str_to_nonterminal_node(node_symbol)
         self.logger.info("Computing nonregular expansions.")
         problematic_expansions: OrderedSet[Tuple[NonterminalType, int, int]] = self.nonregular_expansions(node)
@@ -70,16 +76,23 @@ class RegexConverter:
             unwound_grammar = self.unwind_grammar(problematic_expansions)
             self.grammar = unwound_grammar
             self.grammar_graph = GrammarGraph.from_grammar(unwound_grammar)
+            pyperclip.copy(self.grammar_graph.to_dot())
             self.logger.info("Done unwinding.")
-        elif self.grammar_graph.subgraph(node).is_tree():
-            return self.tree_to_regex(node)
+
+        if self.grammar_graph.subgraph(node).is_tree():
+            result = self.tree_to_regex(node)
 
         # NOTE: We have to use node_symbol below, because node is still from the old,
         #       not unwound / nonregular grammar graph.
-        if self.grammar_type == GrammarType.LEFT_LINEAR:
-            return self.left_linear_grammar_to_regex(node_symbol)
+        elif self.grammar_type == GrammarType.LEFT_LINEAR:
+            result = self.left_linear_grammar_to_regex(node_symbol)
         else:
-            return self.right_linear_grammar_to_regex(node_symbol)
+            result = self.right_linear_grammar_to_regex(node_symbol)
+
+        self.grammar = old_grammar
+        self.grammar_graph = GrammarGraph.from_grammar(self.grammar)
+
+        return result
 
     def left_linear_grammar_to_regex(self, node_symbol: Union[str, Node]) -> z3.ReRef:
         node = self.str_to_nonterminal_node(node_symbol)
