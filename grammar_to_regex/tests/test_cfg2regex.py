@@ -157,51 +157,6 @@ class TestRegexConverter(unittest.TestCase):
                                                max_size_new_neighborhood=200,
                                            ))
 
-    def test_json_constraint(self):
-        logging.basicConfig(level=logging.DEBUG)
-        converter = RegexConverter(JSON_GRAMMAR, max_num_expansions=20)
-        # Forall $member: <member> in <start>,
-        #   Forall $string left of ":" in $member,
-        #     $string == '"key"'
-
-        v_start = z3.String("$start")
-        v_member = z3.String("$member")
-        v_string = z3.String("$string")
-
-        # json_regex = converter.to_regex("<start>")
-        # member_regex = converter.to_regex("<member>")
-        string_regex = converter.to_regex("<string>")
-
-        ###
-        test_for = z3.Exists([v_string],
-                             z3.And(
-                                 # z3.InRe(v_member, member_regex),
-                                 z3.InRe(v_string, string_regex),
-                                 z3.Contains(v_member, v_string),
-                                 v_string == z3.StringVal('"key"')))
-        solver = z3.Solver()
-        solver.add(test_for)
-        print(solver.check())
-        print(solver.model())
-        return
-        ###
-
-        formula_with_re = z3.ForAll([v_member, v_string],
-                                    z3.Implies(
-                                        z3.And(
-                                            z3.InRe(v_start, json_regex),
-                                            z3.InRe(v_member, member_regex),
-                                            z3.InRe(v_string, string_regex),
-                                            z3.Contains(v_start, v_member),
-                                            z3.Contains(v_member, v_string),
-                                            z3.IndexOf(v_member, v_string) < z3.IndexOf(v_member, z3.StringVal(":"))
-                                        ),
-                                        v_string == z3.StringVal('"key"')
-                                    ))
-        solver = z3.Solver()
-        solver.add(formula_with_re)
-        print(solver.check())
-
     def test_unwind_expansion(self):
         grammar = {
             "<start>": ["<A>"],
