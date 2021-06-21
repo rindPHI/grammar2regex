@@ -4,7 +4,6 @@ from enum import Enum
 from typing import Dict, List, Tuple, Union, Generator
 
 import itertools
-import pyperclip
 import z3
 from grammar_graph.gg import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
 from orderedset import OrderedSet
@@ -76,7 +75,7 @@ class RegexConverter:
             unwound_grammar = self.unwind_grammar(problematic_expansions)
             self.grammar = unwound_grammar
             self.grammar_graph = GrammarGraph.from_grammar(unwound_grammar)
-            pyperclip.copy(self.grammar_graph.to_dot())
+            # pyperclip.copy(self.grammar_graph.to_dot())
             self.logger.info("Done unwinding.")
 
         if self.grammar_graph.subgraph(node).is_tree():
@@ -508,7 +507,7 @@ class RegexConverter:
                 #         (not self.grammar_graph.reachable(child, nonterminal) and
                 #          self.nonregular_expansions(child, call_seq + (nonterminal,), problems))):
                 if (self.grammar_graph.subgraph(child).is_tree() or
-                        not self.grammar_graph.reachable(child, nonterminal)):
+                        not child.reachable(nonterminal)):
                     continue
 
                 if found_backlink:

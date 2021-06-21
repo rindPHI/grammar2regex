@@ -1,7 +1,6 @@
 import copy
 import logging
 import unittest
-from time import time
 
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import nonterminals, JSON_GRAMMAR

@@ -1,23 +1,20 @@
 import logging
 import unittest
-from os import path
 from typing import Union
 
-import sys
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR
 from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
+from string_sampler.sampler import StringSampler, StringSamplerConfiguration, InitialSolutionStrategy
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
 from grammar_to_regex.tests.test_helpers import TestHelpers
 
 # ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
-sys.path.append(path.abspath('../../../StringSMTSampler'))
+# sys.path.append(path.abspath('../../../StringSMTSampler'))
 # END ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
-
-from string_sampler.sampler import StringSampler, StringSamplerConfiguration, InitialSolutionStrategy
 
 RIGHT_LINEAR_TOY_GRAMMAR = \
     {"<start>": ["<A>"],

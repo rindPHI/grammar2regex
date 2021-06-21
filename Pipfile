@@ -8,11 +8,13 @@ fuzzingbook = "*"
 pydot = "*"
 z3-solver = "*"
 orderedset = "*"
-# stringsampler = {path = "./../StringSMTSampler/dist/stringsampler-0.0.1.tar.gz"}
 grammargraph = {path = "./../GrammarGraph/dist/grammargraph-0.0.1.tar.gz"}
-pyperclip = "*"
 
 [dev-packages]
+stringsampler = {path = "./../StringSMTSampler/dist/stringsampler-0.0.1.tar.gz"}
+pipenv-setup = "*"
+#pyperclip = "*"
+#stringsampler = {editable = true, path = "./../StringSMTSampler"}
 
 [requires]
 python_version = "3.9"
