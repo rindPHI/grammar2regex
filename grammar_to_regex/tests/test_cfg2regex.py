@@ -1,15 +1,19 @@
+import copy
 import logging
+import string
+import time
 import unittest
-from typing import Union
+from typing import Union, List
 
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
-from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR
+from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR, srange
 from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
 from string_sampler.sampler import StringSampler, StringSamplerConfiguration, InitialSolutionStrategy
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
+from grammar_to_regex.helpers import delete_unreachable
 from grammar_to_regex.tests.test_helpers import TestHelpers
 
 # ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
@@ -142,6 +146,84 @@ class TestRegexConverter(unittest.TestCase):
                                                max_size_new_neighborhood=200,
                                            ))
 
+    def test_range_union_equivalence(self):
+        logging.basicConfig(level=logging.DEBUG)
+
+        long_union = z3.Plus(
+            z3.Union(z3.Re("0"), z3.Re("1"), z3.Re("2"), z3.Re("3"), z3.Re("4"), z3.Re("5"), z3.Re("6"),
+                     z3.Re("7"), z3.Re("8"), z3.Re("9"), z3.Re("a"), z3.Re("b"), z3.Re("c"), z3.Re("d"),
+                     z3.Re("e"), z3.Re("f"), z3.Re("g"), z3.Re("h"), z3.Re("i"), z3.Re("j"), z3.Re("k"),
+                     z3.Re("l"), z3.Re("m"), z3.Re("n"), z3.Re("o"), z3.Re("p"), z3.Re("q"), z3.Re("r"),
+                     z3.Re("s"), z3.Re("t"), z3.Re("u"), z3.Re("v"), z3.Re("w"), z3.Re("x"), z3.Re("y"),
+                     z3.Re("z"), z3.Re("A"), z3.Re("B"), z3.Re("C"), z3.Re("D"), z3.Re("E"), z3.Re("F"),
+                     z3.Re("G"), z3.Re("H"), z3.Re("I"), z3.Re("J"), z3.Re("K"), z3.Re("L"), z3.Re("M"),
+                     z3.Re("N"), z3.Re("O"), z3.Re("P"), z3.Re("Q"), z3.Re("R"), z3.Re("S"), z3.Re("T"),
+                     z3.Re("U"), z3.Re("V"), z3.Re("W"), z3.Re("X"), z3.Re("Y"), z3.Re("Z"), z3.Re("!"),
+                     z3.Re("#"), z3.Re("$"), z3.Re("%"), z3.Re("&"), z3.Re("'"), z3.Re("("), z3.Re(")"),
+                     z3.Re("*"), z3.Re("+"), z3.Re(","), z3.Re("-"), z3.Re("."), z3.Re("/"), z3.Re(":"),
+                     z3.Re(";"), z3.Re("<"), z3.Re("="), z3.Re(">"), z3.Re("?"), z3.Re("@"), z3.Re("["),
+                     z3.Re("]"), z3.Re("^"), z3.Re("_"), z3.Re("`"), z3.Re("{"), z3.Re("|"), z3.Re("}"),
+                     z3.Re("~"), z3.Re(" ")))
+
+        short_range_union = z3.Plus(z3.Union(z3.Range(" ", "!"), z3.Range("#", "["), z3.Range("]", "~")))
+
+        grammar = copy.deepcopy(JSON_GRAMMAR)
+        grammar["<start>"] = ["<characters>"]
+        delete_unreachable(grammar)
+
+        times: List[List[float]] = [[], []]
+
+        for i in range(2):
+            if i == 0:
+                re_1 = long_union
+                re_2 = short_range_union
+            else:
+                re_1 = short_range_union
+                re_2 = long_union
+
+            # Generate from re_1, check whether this is in re_2
+
+            string_sampler_config = StringSamplerConfiguration(reuse_initial_solution=True)
+
+            sampler = StringSampler(
+                z3.InRe(z3.String("var"), re_1),
+                z3.BoolVal(True),
+                grammars={"var": grammar},
+                config=string_sampler_config
+            )
+
+            solutions = sampler.get_solutions()
+
+            num_inputs = 0
+            while num_inputs < 100:
+                try:
+                    new_assignments = next(solutions)
+                except StopIteration:
+                    break
+
+                num_inputs += len(new_assignments)
+                for new_assignment in new_assignments:
+                    for _, inp in new_assignment.items():
+                        # self.logger.debug("Asserting that \"%s\" is in regex %d", inp, i + 1)
+                        formula = z3.InRe(z3.StringVal(inp), re_1)
+                        solver = z3.Solver()
+                        solver.add(formula)
+                        # self.assertEqual(z3.sat, solver.check())
+                        if solver.check() != z3.sat:
+                            continue
+
+                        self.logger.debug("Checking whether \"%s\" is in regex %d", inp, 2 - i)
+                        formula = z3.InRe(z3.StringVal(inp), re_2)
+                        solver = z3.Solver()
+                        solver.add(formula)
+
+                        start_time = time.time()
+                        self.assertEqual(z3.sat, solver.check())
+                        times[i].append(time.time() - start_time)
+
+        self.logger.info("Avg evaluation time long union regex: %f", sum(times[0]) / len(times[0]))
+        self.logger.info("Avg evaluation time short range regex: %f", sum(times[1]) / len(times[1]))
+
     def test_json_object_to_regex(self):
         logging.basicConfig(level=logging.DEBUG)
         converter = RegexConverter(JSON_GRAMMAR, max_num_expansions=20)
@@ -165,6 +247,23 @@ class TestRegexConverter(unittest.TestCase):
         checker = RegexConverter(grammar, max_num_expansions=10)
         unwound_grammar = checker.unwind_grammar(OrderedSet([("<A>", 0, 2), ("<A>", 0, 1)]))
         TestHelpers.assert_grammar_inclusion(self, unwound_grammar, grammar, allowed_failure_percentage=5)
+
+    def test_ranges(self):
+        grammar = {
+            "<start>": ["<nobr-char>"],
+            "<nobr-char>": list(set(srange(string.printable)) - {"\n", "\r"}),
+        }
+
+        converter = RegexConverter(grammar, max_num_expansions=20, compress_unions=True)
+        regex = converter.to_regex("<start>")
+
+        solver = z3.Solver()
+        solver.add(z3.InRe(z3.StringVal("?"), regex))
+        self.assertEqual(z3.sat, solver.check())
+
+        solver = z3.Solver()
+        solver.add(z3.InRe(z3.StringVal("\n"), regex))
+        self.assertEqual(z3.unsat, solver.check())
 
     def check_grammar_regex_inclusion(self,
                                       regex: z3.ReRef,

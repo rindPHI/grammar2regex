@@ -9,7 +9,8 @@ from grammar_graph.gg import GrammarGraph, NonterminalNode, ChoiceNode, Terminal
 from orderedset import OrderedSet
 
 from grammar_to_regex.helpers import reverse_grammar, expand_nonterminals, delete_unreachable, \
-    grammar_to_typed_canonical, GrammarElem, str2grammar_elem, Nonterminal, typed_canonical_to_grammar
+    grammar_to_typed_canonical, GrammarElem, str2grammar_elem, Nonterminal, typed_canonical_to_grammar, \
+    consecutive_numbers
 from grammar_to_regex.nfa import NFA, Transition
 from grammar_to_regex.type_defs import Grammar, NonterminalType
 
@@ -39,15 +40,17 @@ def re_concat(*regular_expressions: z3.ReRef) -> z3.ReRef:
 
 
 class RegexConverter:
-    def __init__(self, grammar: Grammar, max_num_expansions: int = 10):
+    def __init__(self, grammar: Grammar, max_num_expansions: int = 10, compress_unions: bool = False):
         """
         :param grammar: The underlying grammar.
         :param max_num_expansions: For non-regular (sub) grammars, we can unwind problematic nonterminals in
                                    expansions. This parameter sets a depth bound on the number of unwindings.
+        :param compress_unions: If True, unions of single-char regexes will be compressed to range expressions.
         """
 
         self.grammar: Grammar = grammar
         self.max_num_expansions = max_num_expansions
+        self.compress_unions = compress_unions
 
         self.grammar_type: GrammarType = GrammarType.UNDET
         self.grammar_graph: GrammarGraph = GrammarGraph.from_grammar(grammar)
@@ -324,6 +327,22 @@ class RegexConverter:
         if len(union_nodes) == 1:
             return union_nodes[0]
         else:
+            if (self.compress_unions
+                    and all(union_node.decl().kind() == z3.Z3_OP_SEQ_TO_RE for union_node in union_nodes)):
+                # Compress single-char unions to ranges
+                chars = [union_node.children()[0].as_string() for union_node in union_nodes]
+                char_codes = sorted([ord(char) for char in chars if char])
+                consecutive_char_codes = consecutive_numbers(char_codes)
+
+                union_nodes = [
+                    z3.Re(chr(group[0])) if len(group) == 1 else
+                    z3.Range(chr(group[0]), chr(group[-1]))
+                    for group in consecutive_char_codes
+                ]
+
+                if "" in chars:
+                    union_nodes.append(z3.Re(""))
+
             return z3.Union(*union_nodes)
 
     def unwind_grammar(self,

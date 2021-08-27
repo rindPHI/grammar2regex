@@ -1,4 +1,6 @@
 import typing
+from itertools import groupby
+from operator import itemgetter, sub
 from typing import List, Set, Union, Dict
 
 from fuzzingbook.Grammars import unreachable_nonterminals
@@ -182,3 +184,12 @@ def expand_nonterminals(grammar: Grammar,
 def delete_unreachable(grammar):
     for unreachable in unreachable_nonterminals(grammar):
         del grammar[unreachable]
+
+
+def consecutive_numbers(l: List[int]) -> List[List[int]]:
+    result: List[List[int]] = []
+
+    for k, g in groupby(enumerate(l), lambda x: sub(*x)):
+        result.append(list(map(itemgetter(1), g)))
+
+    return result
