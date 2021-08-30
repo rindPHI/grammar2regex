@@ -7,7 +7,7 @@ from typing import Union, List
 
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
-from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR, srange
+from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR, srange, convert_ebnf_grammar
 from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
 from string_sampler.sampler import StringSampler, StringSamplerConfiguration, InitialSolutionStrategy
@@ -27,6 +27,24 @@ RIGHT_LINEAR_TOY_GRAMMAR = \
      "<C>": ["a<A>", "b<C>"],
      "<number>": ["1", "2", "3"]
      }
+
+CSV_EBNF_GRAMMAR = {
+    "<start>": ["<csv-file>"],
+    "<csv-file>": ["<csv-header><csv-record>*"],
+    "<csv-header>": ["<csv-record>"],
+    "<csv-record>": ["<csv-string-list>\n"],
+    "<csv-string-list>": ["<raw-string>", "<raw-string>;<csv-string-list>"],
+    "<raw-string>": ["<spaces>", "<spaces>?<raw-field><spaces>?"],
+    "<raw-field>": ["<simple-field>", "<quoted-field>"],
+    "<simple-field>": ["<simple-character>*"],
+    "<simple-character>": [c for c in srange(string.printable) if c not in ["\n", ";", '"', " ", "\t", "\r"]],
+    "<quoted-field>": ['"<escaped-field>"'],
+    "<escaped-field>": ["<escaped-character>*"],
+    "<escaped-character>": [c for c in srange(string.printable) if c not in ['"']],
+    "<spaces>": [" ", " <spaces>"],
+}
+
+CSV_GRAMMAR = convert_ebnf_grammar(CSV_EBNF_GRAMMAR)
 
 
 class TestRegexConverter(unittest.TestCase):
@@ -171,58 +189,71 @@ class TestRegexConverter(unittest.TestCase):
         grammar["<start>"] = ["<characters>"]
         delete_unreachable(grammar)
 
-        times: List[List[float]] = [[], []]
+        self.check_regex_equivalence(grammar, long_union, short_range_union)
 
-        for i in range(2):
-            if i == 0:
-                re_1 = long_union
-                re_2 = short_range_union
-            else:
-                re_1 = short_range_union
-                re_2 = long_union
+    def test_csv_grammar_conversion(self):
+        # TODO: This fails currently!!!
+        logging.basicConfig(level=logging.DEBUG)
 
-            # Generate from re_1, check whether this is in re_2
+        converter = RegexConverter(CSV_GRAMMAR, max_num_expansions=20, compress_unions=False)
+        long_union_regex = converter.to_regex("<raw-string>")
+        self.assertTrue(long_union_regex)
 
-            string_sampler_config = StringSamplerConfiguration(reuse_initial_solution=True)
+    def test_range_union_equivalence_csv_fields(self):
+        logging.basicConfig(level=logging.DEBUG)
 
-            sampler = StringSampler(
-                z3.InRe(z3.String("var"), re_1),
-                z3.BoolVal(True),
-                grammars={"var": grammar},
-                config=string_sampler_config
-            )
+        grammar = copy.deepcopy(CSV_GRAMMAR)
+        grammar["<start>"] = ["<raw-field>"]
+        delete_unreachable(grammar)
 
-            solutions = sampler.get_solutions()
+        converter = RegexConverter(grammar, max_num_expansions=20, compress_unions=False)
+        long_union_regex = converter.to_regex("<raw-field>")
 
-            num_inputs = 0
-            while num_inputs < 100:
-                try:
-                    new_assignments = next(solutions)
-                except StopIteration:
-                    break
+        converter = RegexConverter(grammar, max_num_expansions=20, compress_unions=True)
+        short_range_union = converter.to_regex("<raw-field>")
 
-                num_inputs += len(new_assignments)
-                for new_assignment in new_assignments:
-                    for _, inp in new_assignment.items():
-                        # self.logger.debug("Asserting that \"%s\" is in regex %d", inp, i + 1)
-                        formula = z3.InRe(z3.StringVal(inp), re_1)
-                        solver = z3.Solver()
-                        solver.add(formula)
-                        # self.assertEqual(z3.sat, solver.check())
-                        if solver.check() != z3.sat:
-                            continue
+        self.check_regex_equivalence(grammar, long_union_regex, short_range_union)
 
-                        self.logger.debug("Checking whether \"%s\" is in regex %d", inp, 2 - i)
-                        formula = z3.InRe(z3.StringVal(inp), re_2)
-                        solver = z3.Solver()
-                        solver.add(formula)
+    def check_regex_equivalence(self, grammar, re_1, re_2):
+        self.logger.debug("Checking inclusion of %s in %s", re_1, re_2)
+        self.check_regex_inclusion(grammar, re_1, re_2)
+        self.logger.debug("Checking inclusion of %s in %s", re_2, re_1)
+        self.check_regex_inclusion(grammar, re_2, re_1)
 
-                        start_time = time.time()
-                        self.assertEqual(z3.sat, solver.check())
-                        times[i].append(time.time() - start_time)
+    def check_regex_inclusion(self, grammar, re_1, re_2):
+        # Generate from re_1, check whether this is in re_2
+        string_sampler_config = StringSamplerConfiguration(reuse_initial_solution=True)
+        sampler = StringSampler(
+            z3.InRe(z3.String("var"), re_1),
+            z3.BoolVal(True),
+            grammars={"var": grammar},
+            config=string_sampler_config
+        )
+        solutions = sampler.get_solutions()
+        num_inputs = 0
+        while num_inputs < 100:
+            try:
+                new_assignments = next(solutions)
+            except StopIteration:
+                break
 
-        self.logger.info("Avg evaluation time long union regex: %f", sum(times[0]) / len(times[0]))
-        self.logger.info("Avg evaluation time short range regex: %f", sum(times[1]) / len(times[1]))
+            num_inputs += len(new_assignments)
+            for new_assignment in new_assignments:
+                for _, inp in new_assignment.items():
+                    # self.logger.debug("Asserting that \"%s\" is in regex %d", inp, i + 1)
+                    formula = z3.InRe(z3.StringVal(inp), re_1)
+                    solver = z3.Solver()
+                    solver.add(formula)
+                    # self.assertEqual(z3.sat, solver.check())
+                    if solver.check() != z3.sat:
+                        continue
+
+                    self.logger.debug("Checking whether \"%s\" is in regex %s", inp, re_2)
+                    formula = z3.InRe(z3.StringVal(inp), re_2)
+                    solver = z3.Solver()
+                    solver.add(formula)
+
+                    self.assertEqual(z3.sat, solver.check())
 
     def test_json_object_to_regex(self):
         logging.basicConfig(level=logging.DEBUG)
