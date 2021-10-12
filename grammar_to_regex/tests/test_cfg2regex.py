@@ -8,6 +8,7 @@ from typing import Union, List
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR, srange, convert_ebnf_grammar
+from fuzzingbook.GreyboxGrammarFuzzer import XML_GRAMMAR
 from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
 from string_sampler.sampler import StringSampler, StringSamplerConfiguration, InitialSolutionStrategy
@@ -158,11 +159,12 @@ class TestRegexConverter(unittest.TestCase):
 
         regex = converter.to_regex("<member>")
 
-        self.check_grammar_regex_inclusion(regex, JSON_GRAMMAR, allowed_failure_percentage=5, strict=False,
-                                           string_sampler_config=StringSamplerConfiguration(
-                                               initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
-                                               max_size_new_neighborhood=200,
-                                           ))
+        self.check_grammar_regex_inclusion(
+            regex, JSON_GRAMMAR, allowed_failure_percentage=5, strict=False,
+            string_sampler_config=StringSamplerConfiguration(
+                initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
+                max_size_new_neighborhood=200,
+            ))
 
     def test_range_union_equivalence(self):
         logging.basicConfig(level=logging.DEBUG)
@@ -198,6 +200,25 @@ class TestRegexConverter(unittest.TestCase):
         converter = RegexConverter(CSV_GRAMMAR, max_num_expansions=20, compress_unions=False)
         long_union_regex = converter.to_regex("<raw-string>")
         self.assertTrue(long_union_regex)
+
+    def test_right_linear_id_grammar_conversion(self):
+        logging.basicConfig(level=logging.DEBUG)
+
+        grammar = {
+            "<start>": ["<id>"],
+            "<id>": ["<letter>", "<id><letter>"],
+            "<letter>": srange(string.ascii_letters + string.digits + "\"" + "'" + "."),
+        }
+
+        converter = RegexConverter(grammar)
+        id_regex = converter.to_regex("<id>")
+
+        self.check_grammar_regex_inclusion(
+            id_regex, grammar, allowed_failure_percentage=5, strict=False,
+            string_sampler_config=StringSamplerConfiguration(
+                initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
+                max_size_new_neighborhood=200,
+            ))
 
     def test_range_union_equivalence_csv_fields(self):
         logging.basicConfig(level=logging.DEBUG)

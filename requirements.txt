@@ -61,5 +61,7 @@ wcwidth==0.2.5
 webencodings==0.5.1
 widgetsnbextension==3.5.1
 z3-solver==4.8.10.0
+networkx==2.6.3
+astor==0.8.1
 ./libs/stringsampler-0.0.1.tar.gz
 ./libs/grammargraph-0.0.1.tar.gz

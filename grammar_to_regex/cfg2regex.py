@@ -218,7 +218,6 @@ class RegexConverter:
             self.nfa_cache = {}
 
         self.logger.info(f"Converting sub grammar for nonterminal {node.symbol} to NFA")
-        assert self.grammar_type != GrammarType.LEFT_LINEAR
 
         nfa = NFA()
         final_state = "[final]"
