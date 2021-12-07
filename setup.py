@@ -253,7 +253,7 @@ setup(
       "wrapt==1.13.3",
       "wsproto==1.0.0",
       "yapf==0.31.0",
-      "z3-solver==4.8.8.0",
+      "z3-solver>=4.8.8.0",
       "zipp==3.6.0"
     ],  # Optional
     # List additional groups of dependencies here (e.g. development
