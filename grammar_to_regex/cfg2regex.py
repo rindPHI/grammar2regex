@@ -525,7 +525,7 @@ class RegexConverter:
                 #         (not self.grammar_graph.reachable(child, nonterminal) and
                 #          self.nonregular_expansions(child, call_seq + (nonterminal,), problems))):
                 if (self.grammar_graph.subgraph(child).is_tree() or
-                        not child.reachable(nonterminal)):
+                        not self.grammar_graph.reachable(child, nonterminal)):
                     continue
 
                 if found_backlink:
