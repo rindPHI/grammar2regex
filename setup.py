@@ -194,7 +194,6 @@ setup(
       "notebook==6.4.3",
       "notedown==1.5.1",
       "numpy==1.21.4",
-      "orderedset==2.0.3",
       "outcome==1.1.0",
       "packaging==21.0",
       "pandas==1.3.4",
@@ -254,7 +253,8 @@ setup(
       "wsproto==1.0.0",
       "yapf==0.31.0",
       "z3-solver>=4.8.8.0",
-      "zipp==3.6.0"
+      "zipp==3.6.0",
+      "proxyorderedset @ git+git://github.com/rindPHI/proxyorderedset@1a11f4289789d4fa5babe67560ad3be0e19c4790"
     ],  # Optional
     # List additional groups of dependencies here (e.g. development
     # dependencies). Users will be able to install these using the "extras"
