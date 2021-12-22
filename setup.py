@@ -254,8 +254,8 @@ setup(
       "yapf==0.31.0",
       "z3-solver>=4.8.8.0",
       "zipp==3.6.0",
-      "proxyorderedset @ git+git://github.com/rindPHI/proxyorderedset@8d0a431ccdd7688a989ee08333ce32ce37df7ebe",
-      "grammargraph @ git+git://github.com/rindPHI/GrammarGraph@c69f3e5d6b40c8106e4f854cdb3ed0c55b8cc26f"
+      "proxyorderedset @ git+git://github.com/rindPHI/proxyorderedset",
+      "grammargraph @ git+git://github.com/rindPHI/GrammarGraph"
     ],  # Optional
     # List additional groups of dependencies here (e.g. development
     # dependencies). Users will be able to install these using the "extras"
