@@ -51,6 +51,7 @@ class RegexConverter:
 
         self.nfa_cache: Dict[str, NFA] = {}
         self.nfa_cache_created_for: Grammar = grammar
+        self.state_gen = state_generator("q")
 
         self.logger = logging.getLogger("RegexConverter")
 
@@ -237,7 +238,7 @@ class RegexConverter:
                 current_state = node.quote_symbol()
 
                 for child in children[0:-1]:
-                    next_state = nfa.next_free_state(state_generator("q"))
+                    next_state = nfa.next_free_state(self.state_gen)
                     nfa.add_state(next_state)
 
                     if isinstance(child, TerminalNode):
@@ -253,16 +254,17 @@ class RegexConverter:
                                 sub_nfa = self.right_linear_grammar_to_nfa(child)
                                 self.nfa_cache[child.symbol] = sub_nfa
 
-                            sub_nfa.substitute_final_state(next_state)
+                            sub_nfa = sub_nfa.substitute_states({
+                                state: nfa.next_free_state(self.state_gen)
+                                for state in sub_nfa.states
+                                if state in nfa.states and state != sub_nfa.final_state
+                            } | {sub_nfa.final_state: next_state})
 
                             for state in sub_nfa.states:
                                 if state not in nfa.states:
                                     nfa.add_state(state)
 
-                            # Note: The NFAs might overlap, if elements reference the same nonterminals.
-                            # Therefore, we add transitions "unsafely", i.e., ignore if some transitions
-                            # from sub_nfa are already present in nfa.
-                            nfa.add_transitions(sub_nfa.transitions, safe=False)
+                            nfa.add_transitions(sub_nfa.transitions)
 
                             if (current_state, epsilon(), sub_nfa.initial_state) not in nfa.transitions:
                                 nfa.add_transition(current_state, epsilon(), sub_nfa.initial_state)
@@ -283,6 +285,7 @@ class RegexConverter:
 
         # Bundle transitions between the same states
         # for p, q in itertools.product(nfa.states, nfa.states):
+        # TODO: Might no longer be necessary due to sub-NFA renaming?
         for p, q in [(p, q) for p, _, q in nfa.transitions]:
             transitions = nfa.transitions_between(p, q)
             if len(transitions) >= 1:

@@ -1,3 +1,4 @@
+import copy
 from typing import Tuple, Dict, TypeVar, Union, List, Generator, Set, Iterable
 
 import pydot
@@ -76,17 +77,24 @@ class NFA:
     def transitions_between(self, p, q):
         return [(_p, l, _q) for (_p, l, _q) in self.transitions if _p == p and _q == q]
 
-    def substitute_final_state(self, new_final_state):
-        if new_final_state not in self.states:
-            self.add_state(new_final_state)
+    def substitute_states(self, subst_map: Dict[State, State]) -> 'NFA':
+        initial_state = subst_map.get(self.initial_state, self.initial_state)
+        final_state = subst_map.get(self.final_state, self.final_state)
 
-        old_final_state = self.final_state
-        self.final_state = new_final_state
+        states = copy.deepcopy(self.states)
+        for state in subst_map:
+            states.remove(state)
+            states.add(subst_map[state])
 
-        for from_state, letter, to_state in self.transitions:
-            if to_state == old_final_state:
-                self.delete_transition(from_state, letter, to_state)
-                self.add_transition(from_state, letter, new_final_state)
+        transitions = {
+            (subst_map.get(from_state, from_state), letter, subst_map.get(to_state, to_state))
+            for from_state, letter, to_state in self.transitions
+        }
+
+        return NFA(tuple(states), initial_state, final_state, transitions)
+
+    def substitute_final_state(self, new_final_state) -> 'NFA':
+        return self.substitute_states({self.final_state: new_final_state})
 
     def add_transition(self, from_state: State, letter: Letter, to_state: State, safe: bool = True):
         # assert (from_state, letter) not in self.transitions  # <-- for DFA

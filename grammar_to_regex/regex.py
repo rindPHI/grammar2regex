@@ -42,7 +42,7 @@ class Range:
     to_char: str
 
     def __str__(self):
-        return f"[{self.from_char} .. {self.to_char}]"
+        return f'["{self.from_char}" .. "{self.to_char}"]'
 
 
 Regex = Singleton | Union | Concat | Range | Star
@@ -80,7 +80,15 @@ def concat(*children: Regex) -> Regex:
     if len(children) == 1:
         return children[0]
 
-    return Concat(tuple(children))
+    elements = []
+    for child in children:
+        if isinstance(child, Concat):
+            elements.extend(child.children)
+            continue
+
+        elements.append(child)
+
+    return Concat(tuple(elements))
 
 
 def star(child: Regex) -> Regex:

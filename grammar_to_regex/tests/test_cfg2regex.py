@@ -14,7 +14,7 @@ from string_sampler.sampler import StringSampler, StringSamplerConfiguration, In
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
 from grammar_to_regex.helpers import delete_unreachable
-from grammar_to_regex.regex import Concat, Star, Union, Range, Singleton, regex_to_z3
+from grammar_to_regex.regex import Concat, Star, Union, Range, Singleton, regex_to_z3, concat, union
 from grammar_to_regex.tests.test_helpers import TestHelpers
 
 # ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
@@ -102,10 +102,11 @@ class TestRegexConverter(unittest.TestCase):
 
     def test_us_phone_grammar_to_regex(self):
         logging.basicConfig(level=logging.INFO)
-        checker = RegexConverter(US_PHONE_GRAMMAR)
-        regex = regex_to_z3(checker.right_linear_grammar_to_regex("<start>"))
+        checker = RegexConverter(US_PHONE_GRAMMAR, compress_unions=True)
+        regex = checker.to_regex("<start>", convert_to_z3=False)
+        self.logger.info(regex)
 
-        self.check_grammar_regex_inclusion(regex, US_PHONE_GRAMMAR)
+        self.check_grammar_regex_inclusion(regex_to_z3(regex), US_PHONE_GRAMMAR, use_string_sampler=False)
 
     def test_toy_grammar_to_nfa(self):
         checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
@@ -205,14 +206,23 @@ class TestRegexConverter(unittest.TestCase):
 
         self.check_regex_equivalence(grammar, long_union, short_range_union)
 
-    @pytest.mark.skip(reason="Fails currently in NFA conversion, needs to be fixed.")
+    # @pytest.mark.skip(reason="Fails currently in NFA conversion, needs to be fixed.")
     def test_csv_grammar_conversion(self):
-        # TODO: This fails currently!!!
         logging.basicConfig(level=logging.DEBUG)
 
-        converter = RegexConverter(CSV_GRAMMAR, max_num_expansions=20, compress_unions=False)
-        long_union_regex = converter.to_regex("<raw-string>")
-        self.assertTrue(long_union_regex)
+        converter = RegexConverter(CSV_GRAMMAR, max_num_expansions=20, compress_unions=True)
+        long_union_regex = converter.to_regex("<raw-string>", convert_to_z3=False)
+
+        grammar = copy.deepcopy(CSV_GRAMMAR)
+        grammar["<start>"] = ["<raw-string>"]
+        delete_unreachable(grammar)
+
+        self.check_grammar_regex_inclusion(
+            regex_to_z3(long_union_regex), grammar, allowed_failure_percentage=5, strict=False,
+            string_sampler_config=StringSamplerConfiguration(
+                initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
+                max_size_new_neighborhood=200,
+            ))
 
     def test_right_linear_id_grammar_conversion(self):
         logging.basicConfig(level=logging.DEBUG)
@@ -287,7 +297,7 @@ class TestRegexConverter(unittest.TestCase):
                     solver = z3.Solver()
                     solver.add(formula)
 
-                    self.assertEqual(z3.sat, solver.check())
+                    self.assertEqual(z3.sat, solver.check(), f"Input {inp} is not in regex {re_2}")
 
     def test_json_object_to_regex(self):
         logging.basicConfig(level=logging.DEBUG)
@@ -331,6 +341,26 @@ class TestRegexConverter(unittest.TestCase):
         solver.add(z3.InRe(z3.StringVal("\n"), regex))
         self.assertEqual(z3.unsat, solver.check())
 
+    def test_xml_id_simplified(self):
+        grammar = {
+            "<start>": ["<id>"],
+            "<id>": ["<id-chars>:<id-chars>"],
+            "<id-chars>": ["<id-char>", "<id-char><id-chars>"],
+            "<id-char>": ["a"]
+        }
+
+        converter = RegexConverter(grammar, max_num_expansions=20, compress_unions=True)
+
+        computed_id_with_prefix_regex = converter.to_regex("<id>", convert_to_z3=False)
+        # a*a:a*a
+        expected_id_with_prefix_regex = concat(
+            Star(Singleton('a')),
+            concat(
+                concat(Singleton('a'), Singleton(':')),
+                Star(Singleton('a')),
+                Singleton('a')))
+        self.assertEqual(expected_id_with_prefix_regex, computed_id_with_prefix_regex)
+
     def test_ranges_xml_id(self):
         xml_id_grammar = {
             "<start>": ["<id>"],
@@ -343,31 +373,28 @@ class TestRegexConverter(unittest.TestCase):
                 "<id-start-char><id-chars>",
             ],
             "<id-with-prefix>": ["<id-no-prefix>:<id-no-prefix>"],
-            "<id-start-char>": srange("_" + string.ascii_letters),
+            "<id-start-char>": srange("_abc"),
             "<id-chars>": ["<id-char>", "<id-char><id-chars>"],
-            "<id-char>": ["<id-start-char>"] + srange("-." + string.digits),
+            "<id-char>": ["<id-start-char>"] + srange("-.012"),
         }
 
         converter = RegexConverter(xml_id_grammar, max_num_expansions=20, compress_unions=True)
 
-        regex = converter.to_regex("<id-chars>", convert_to_z3=False)
-        self.assertEqual(
-            Concat(children=tuple([
-                Star(child=Union(children=(
-                    Range(from_char='-', to_char='.'),
-                    Range(from_char='0', to_char='9'),
-                    Range(from_char='A', to_char='Z'),
-                    Singleton(child='_'),
-                    Range(from_char='a', to_char='z')))),
-                Union(children=(
-                    Range(from_char='-', to_char='.'),
-                    Range(from_char='0', to_char='9'),
-                    Range(from_char='A', to_char='Z'),
-                    Singleton(child='_'),
-                    Range(from_char='a', to_char='z')))])), regex)
+        idchar_regex = union(Range('-', '.'), Range('0', '2'), Singleton('_'), Range('a', 'c'))
+        id_chars_regex = concat(Star(idchar_regex), idchar_regex)
+        computed_idchars_regex = converter.to_regex("<id-chars>", convert_to_z3=False)
+        self.assertEqual(id_chars_regex, computed_idchars_regex)
 
-        regex = converter.to_regex("<id>")
-        self.check_grammar_regex_inclusion(regex, xml_id_grammar)
+        id_start_char_regex = union(Singleton('_'), Range('a', 'c'))
+        id_no_prefix_regex = union(id_start_char_regex, concat(id_start_char_regex, id_chars_regex))
+        id_with_prefix_regex = concat(id_no_prefix_regex, Singleton(":"), id_no_prefix_regex)
+
+        computed_id_with_prefix_regex = converter.to_regex("<id-with-prefix>", convert_to_z3=False)
+        self.logger.info(computed_id_with_prefix_regex)
+        self.check_regex_equivalence(
+            xml_id_grammar,
+            regex_to_z3(id_with_prefix_regex),
+            regex_to_z3(computed_id_with_prefix_regex))
 
     def check_grammar_regex_inclusion(
             self,
@@ -436,8 +463,6 @@ class TestRegexConverter(unittest.TestCase):
         for _ in range(runs):
             inp = fuzzer.fuzz()
             formula = z3.InRe(z3.StringVal(inp), regex)
-            self.logger.debug(f"Checking whether {inp} is in regex")
-
             # result = evaluator.eval(formula)
 
             solver = z3.Solver()
@@ -445,13 +470,13 @@ class TestRegexConverter(unittest.TestCase):
             result = solver.check() == z3.sat
 
             if not result:
-                self.logger.debug(f"Input {inp} not in regular expression")
+                self.logger.debug(f"Input {inp} not in regex")
                 if allowed_failure_percentage == 0:
                     self.assertEqual(True, result, f"Input {inp} not in regex")
                 else:
                     fails += 1
-
-            self.logger.debug(f"Input {inp} is in regular expression")
+            else:
+                self.logger.debug(f"Input {inp} is in regular expression")
 
         if allowed_failure_percentage > 0:
             self.assertLessEqual(fails, (allowed_failure_percentage / 100) * runs,
