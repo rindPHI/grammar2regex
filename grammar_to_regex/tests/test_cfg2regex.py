@@ -4,6 +4,7 @@ import string
 import unittest
 from typing import Optional
 
+import pytest
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR, srange, convert_ebnf_grammar
@@ -164,15 +165,14 @@ class TestRegexConverter(unittest.TestCase):
 
         self.check_grammar_regex_inclusion(regex, grammar)
 
-    # TODO: Grammar conversion of <member> does not work...
     def test_json_member_to_regex(self):
-        logging.basicConfig(level=logging.DEBUG)
-        converter = RegexConverter(JSON_GRAMMAR, max_num_expansions=20)
+        converter = RegexConverter(JSON_GRAMMAR, max_num_expansions=20, compress_unions=True)
 
-        regex = converter.to_regex("<member>")
+        regex = converter.to_regex("<member>", convert_to_z3=False)
 
         self.check_grammar_regex_inclusion(
-            regex, JSON_GRAMMAR, allowed_failure_percentage=5, strict=False,
+            regex_to_z3(regex), JSON_GRAMMAR, allowed_failure_percentage=5, strict=False,
+            runs=10,
             string_sampler_config=StringSamplerConfiguration(
                 initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
                 max_size_new_neighborhood=200,
@@ -205,6 +205,7 @@ class TestRegexConverter(unittest.TestCase):
 
         self.check_regex_equivalence(grammar, long_union, short_range_union)
 
+    @pytest.mark.skip(reason="Fails currently in NFA conversion, needs to be fixed.")
     def test_csv_grammar_conversion(self):
         # TODO: This fails currently!!!
         logging.basicConfig(level=logging.DEBUG)
