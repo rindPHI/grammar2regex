@@ -12,7 +12,7 @@ from grammar_to_regex.helpers import reverse_grammar, expand_nonterminals, delet
     grammar_to_typed_canonical, GrammarElem, str2grammar_elem, Nonterminal, typed_canonical_to_grammar, \
     consecutive_numbers
 from grammar_to_regex.nfa import NFA, Transition
-from grammar_to_regex.regex import Regex, concat, Star, Union, Singleton, regex_to_z3, union, Range, Concat
+from grammar_to_regex.regex import Regex, concat, Star, Union, Singleton, regex_to_z3, union, Range, Concat, star
 from grammar_to_regex.type_defs import Grammar, NonterminalType
 
 
@@ -190,16 +190,13 @@ class RegexConverter:
             p_q_trans = nfa.transitions_between(p, q)
             q_q_trans = nfa.transitions_between(q, q)
 
-            E_p_q = label_from_singleton_tr(p_q_trans)
+            E_p_q = label_from_singleton_tr(p_q_trans) or Singleton("")
             assert E_p_q is not None
-            E_p_p = label_from_singleton_tr(p_p_trans)
-            E_q_q = label_from_singleton_tr(q_q_trans)
+            E_p_p = label_from_singleton_tr(p_p_trans) or Singleton("")
+            E_q_q = label_from_singleton_tr(q_q_trans) or Singleton("")
 
             # E(p,p)*E(p,q)E(q,q)*
-            regex = E_p_q if E_p_p is None else concat(Star(E_p_p), E_p_p)
-            regex = regex if E_q_q is None else concat(regex, Star(E_q_q))
-
-            return regex
+            return concat(star(E_p_p), E_p_q, star(E_q_q))
         else:
             return next(iter(nfa.transitions))[1]
 

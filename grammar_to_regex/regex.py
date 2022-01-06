@@ -45,7 +45,7 @@ class Range:
         return f"[{self.from_char} .. {self.to_char}]"
 
 
-Regex = Singleton | Union | Concat | Range
+Regex = Singleton | Union | Concat | Range | Star
 
 
 def union(*children: Regex) -> Regex:
@@ -77,6 +77,13 @@ def concat(*children: Regex) -> Regex:
         return children[0]
 
     return Concat(tuple(children))
+
+
+def star(child: Regex) -> Regex:
+    if is_epsilon(child):
+        return child
+
+    return Star(child)
 
 
 def regex_to_z3(regex: Regex) -> z3.ReRef:

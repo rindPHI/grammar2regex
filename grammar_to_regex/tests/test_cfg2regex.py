@@ -111,11 +111,25 @@ class TestRegexConverter(unittest.TestCase):
         checker.right_linear_grammar_to_nfa("<A>")
         # No Exception
 
-    def test_toy_grammar_to_regex(self):
-        checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
-        regex = regex_to_z3(checker.right_linear_grammar_to_regex("<A>"))
+    def test_simple_grammar_to_regex(self):
+        # grammar = RIGHT_LINEAR_TOY_GRAMMAR
+        # a* b
+        grammar = {
+            "<start>": ["<A>"],
+            "<A>": ["a<A>", "b"],
+        }
+        checker = RegexConverter(grammar)
+        regex = checker.right_linear_grammar_to_regex("<A>")
 
-        self.check_grammar_regex_inclusion(regex, RIGHT_LINEAR_TOY_GRAMMAR)
+        self.assertEqual(Concat(children=(Star(child=Singleton(child='a')), Singleton(child='b'))), regex)
+        self.check_grammar_regex_inclusion(regex_to_z3(regex), grammar, use_string_sampler=False)
+
+    def test_toy_grammar_to_regex(self):
+        grammar = RIGHT_LINEAR_TOY_GRAMMAR
+        checker = RegexConverter(grammar)
+        regex = checker.right_linear_grammar_to_regex("<A>")
+
+        self.check_grammar_regex_inclusion(regex_to_z3(regex), grammar, use_string_sampler=False)
 
     def test_simple_toy_grammar_to_regex(self):
         grammar = {
@@ -352,8 +366,8 @@ class TestRegexConverter(unittest.TestCase):
                     Singleton(child='_'),
                     Range(from_char='a', to_char='z')))])), regex)
 
-        # regex = converter.to_regex("<id>", convert_to_z3=False)
-        # print(regex)
+        regex = converter.to_regex("<id>")
+        self.check_grammar_regex_inclusion(regex, xml_id_grammar)
 
     def check_grammar_regex_inclusion(
             self,
@@ -362,7 +376,8 @@ class TestRegexConverter(unittest.TestCase):
             runs: int = 100,
             allowed_failure_percentage: int = 0,
             strict: bool = True,
-            string_sampler_config: Optional[StringSamplerConfiguration] = None):
+            string_sampler_config: Optional[StringSamplerConfiguration] = None,
+            use_string_sampler: bool = True):
         """
         Asserts that regex is, if allowed_failure_percentage is 0, equivalent to grammar, and otherwise a
         strict subset of grammar.
@@ -374,26 +389,42 @@ class TestRegexConverter(unittest.TestCase):
             string_sampler_config = StringSamplerConfiguration(reuse_initial_solution=True)
 
         # regex \subset grammar
-        sampler = StringSampler(
-            z3.InRe(z3.String("var"), regex),
-            z3.BoolVal(True),
-            grammars={"var": grammar},
-            config=string_sampler_config
-        )
+        if use_string_sampler:
+            sampler = StringSampler(
+                z3.InRe(z3.String("var"), regex),
+                z3.BoolVal(True),
+                grammars={"var": grammar},
+                config=string_sampler_config
+            )
 
-        num_inputs = 0
-        for new_assignments in sampler.get_solutions():
-            num_inputs += len(new_assignments)
-            self.logger.debug(f"Generated {num_inputs} instantiations")
-            for new_assignment in new_assignments:
-                for _, new_input in new_assignment.items():
-                    try:
-                        list(parser.parse(new_input))[0]
-                    except SyntaxError:
-                        self.fail(f"Input {new_input} not in language")
+            num_inputs = 0
+            for new_assignments in sampler.get_solutions():
+                num_inputs += len(new_assignments)
+                self.logger.debug(f"Generated {num_inputs} instantiations")
+                for new_assignment in new_assignments:
+                    for _, new_input in new_assignment.items():
+                        try:
+                            list(parser.parse(new_input))[0]
+                        except SyntaxError:
+                            self.fail(f"Input {new_input} not in language")
 
-            if num_inputs >= runs:
-                break
+                if num_inputs >= runs:
+                    break
+        else:
+            prev_solutions: OrderedSet[str] = OrderedSet()
+            for _ in range(runs):
+                s = z3.Solver()
+                s.add(z3.InRe(z3.String("var"), regex))
+                for p in prev_solutions:
+                    s.add(z3.Not(z3.String("var") == z3.StringVal(p)))
+                assert s.check() == z3.sat
+
+                solution = s.model()[z3.String("var")].as_string()
+                try:
+                    list(parser.parse(solution))[0]
+                except SyntaxError:
+                    self.fail(f"Input {solution} not in language")
+                prev_solutions.add(solution)
 
         # grammar \subset regex
 
