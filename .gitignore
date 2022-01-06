@@ -1,5 +1,6 @@
 __pycache__/
 dist/
 grammar2regex.egg-info/
-.idea/
 venv/
+.gitignore
+.idea/
