@@ -1,9 +1,9 @@
 import copy
+import itertools
 import logging
 from enum import Enum
-from typing import Dict, List, Tuple, Union, Generator
+from typing import Dict, List, Tuple, Generator, Optional
 
-import itertools
 import z3
 from grammar_graph.gg import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
 from orderedset import OrderedSet
@@ -12,6 +12,7 @@ from grammar_to_regex.helpers import reverse_grammar, expand_nonterminals, delet
     grammar_to_typed_canonical, GrammarElem, str2grammar_elem, Nonterminal, typed_canonical_to_grammar, \
     consecutive_numbers
 from grammar_to_regex.nfa import NFA, Transition
+from grammar_to_regex.regex import Regex, concat, Star, Union, Singleton, regex_to_z3, union, Range, Concat
 from grammar_to_regex.type_defs import Grammar, NonterminalType
 
 
@@ -26,17 +27,6 @@ def state_generator(base: str) -> Generator[str, None, None]:
     while True:
         yield f"{base}_{i}"
         i += 1
-
-
-def re_concat(*regular_expressions: z3.ReRef) -> z3.ReRef:
-    regular_expressions = [regex for regex in regular_expressions if not regex.eq(z3.Re(""))]
-
-    if not regular_expressions:
-        return z3.Re("")
-    elif len(regular_expressions) == 1:
-        return regular_expressions[0]
-    else:
-        return z3.Concat(*regular_expressions)
 
 
 class RegexConverter:
@@ -63,7 +53,7 @@ class RegexConverter:
 
         self.logger = logging.getLogger("RegexConverter")
 
-    def to_regex(self, node_symbol: Union[str, Node]) -> z3.ReRef:
+    def to_regex(self, node_symbol: str | Node, convert_to_z3=True) -> z3.ReRef | Regex:
         old_grammar = copy.deepcopy(self.grammar)
         self.grammar_graph = self.grammar_graph.subgraph(node_symbol)
         self.grammar = self.grammar_graph.to_grammar()
@@ -80,6 +70,8 @@ class RegexConverter:
             self.grammar_graph = GrammarGraph.from_grammar(unwound_grammar)
             # pyperclip.copy(self.grammar_graph.to_dot())
             self.logger.info("Done unwinding.")
+        else:
+            self.logger.info("Grammar is regular.")
 
         if self.grammar_graph.subgraph(node).is_tree():
             result = self.tree_to_regex(node)
@@ -94,9 +86,12 @@ class RegexConverter:
         self.grammar = old_grammar
         self.grammar_graph = GrammarGraph.from_grammar(self.grammar)
 
-        return result
+        if self.compress_unions:
+            result = compress_unions(result)
 
-    def left_linear_grammar_to_regex(self, node_symbol: Union[str, Node]) -> z3.ReRef:
+        return result if not convert_to_z3 else regex_to_z3(result)
+
+    def left_linear_grammar_to_regex(self, node_symbol: str | Node) -> Regex:
         node = self.str_to_nonterminal_node(node_symbol)
         self.assert_regular(node)
         assert self.grammar_type == GrammarType.LEFT_LINEAR
@@ -117,7 +112,7 @@ class RegexConverter:
 
         return self.nfa_to_regex(nfa)
 
-    def right_linear_grammar_to_regex(self, node: Union[str, Node]) -> z3.ReRef:
+    def right_linear_grammar_to_regex(self, node: str | Node) -> Regex:
         node = self.str_to_nonterminal_node(node)
         self.assert_regular(node)
         assert self.grammar_type != GrammarType.LEFT_LINEAR
@@ -128,18 +123,19 @@ class RegexConverter:
         self.logger.info(f"Converting NFA of sub grammar for {node.symbol} to regex")
         return self.nfa_to_regex(nfa)
 
-    def nfa_to_regex(self, nfa: Union[NFA, None]) -> z3.ReRef:
+    def nfa_to_regex(self, nfa: Optional[NFA]) -> Regex:
         assert not [state for state in nfa.states if not any(
             [(s1, l, s2) for (s1, l, s2) in nfa.transitions if state in (s1, s2)]
         )], f"Found isolated states!"
 
-        def label_from_singleton_tr(transitions: List[Transition]) -> Union[None, z3.ReRef]:
+        def label_from_singleton_tr(transitions: List[Transition]) -> Optional[Regex]:
             return None if not transitions else transitions[0][1]
 
         # It's much faster if we start eliminating states with few predecessors and successors
         intermediate_states = [state for state in nfa.states if state not in (nfa.initial_state, nfa.final_state)]
-        intermediate_states = sorted(intermediate_states,
-                                     key=lambda s: len(nfa.predecessors(s)) + len(nfa.successors(s)))
+        intermediate_states = sorted(
+            intermediate_states,
+            key=lambda s: len(nfa.predecessors(s)) + len(nfa.successors(s)))
 
         while len(intermediate_states) > 0:
             s = intermediate_states[0]
@@ -153,7 +149,7 @@ class RegexConverter:
                               f"{len(nfa.states)} states left")
 
             E_s_s = label_from_singleton_tr(loops)
-            E_s_s_star = None if E_s_s is None else z3.Star(E_s_s)
+            E_s_s_star = None if E_s_s is None else Star(E_s_s)
 
             for p, q in itertools.product(predecessors, successors):
                 # New label: E(p, q) + E(p, s)E(s, s)*E(s, q)
@@ -169,11 +165,11 @@ class RegexConverter:
                 assert E_s_q is not None
 
                 # E(p, s)E(s, s)*
-                regex = E_p_s if E_s_s_star is None else re_concat(E_p_s, E_s_s_star)
-                regex = re_concat(regex, E_s_q)
+                regex = E_p_s if E_s_s_star is None else concat(E_p_s, E_s_s_star)
+                regex = concat(regex, E_s_q)
 
                 if E_p_q is not None:
-                    regex = z3.Union(E_p_q, regex)
+                    regex = union(E_p_q, regex)
 
                 nfa.delete_transitions(p_q_trans)
                 nfa.add_transition(p, regex, q)
@@ -200,14 +196,14 @@ class RegexConverter:
             E_q_q = label_from_singleton_tr(q_q_trans)
 
             # E(p,p)*E(p,q)E(q,q)*
-            regex = E_p_q if E_p_p is None else re_concat(z3.Star(E_p_p), E_p_p)
-            regex = regex if E_q_q is None else re_concat(regex, z3.Star(E_q_q))
+            regex = E_p_q if E_p_p is None else concat(Star(E_p_p), E_p_p)
+            regex = regex if E_q_q is None else concat(regex, Star(E_q_q))
 
             return regex
         else:
             return next(iter(nfa.transitions))[1]
 
-    def right_linear_grammar_to_nfa(self, node: Union[str, Node]) -> NFA:
+    def right_linear_grammar_to_nfa(self, node: str | Node) -> NFA:
         node = self.str_to_nonterminal_node(node)
         self.assert_regular(node)
 
@@ -248,9 +244,10 @@ class RegexConverter:
                     next_state = nfa.next_free_state(state_generator("q"))
                     nfa.add_state(next_state)
 
-                    if type(child) is TerminalNode:
-                        nfa.add_transition(current_state, z3.Re(child.symbol), next_state)
+                    if isinstance(child, TerminalNode):
+                        nfa.add_transition(current_state, Singleton(child.symbol), next_state)
                     else:
+                        assert isinstance(child, NonterminalNode)
                         if self.grammar_graph.subgraph(child).is_tree():
                             nfa.add_transition(current_state, self.tree_to_regex(child), next_state)
                         else:
@@ -271,17 +268,17 @@ class RegexConverter:
                             # from sub_nfa are already present in nfa.
                             nfa.add_transitions(sub_nfa.transitions, safe=False)
 
-                            if (current_state, z3.Re(""), sub_nfa.initial_state) not in nfa.transitions:
-                                nfa.add_transition(current_state, z3.Re(""), sub_nfa.initial_state)
+                            if (current_state, Singleton(""), sub_nfa.initial_state) not in nfa.transitions:
+                                nfa.add_transition(current_state, Singleton(""), sub_nfa.initial_state)
 
                     current_state = next_state
 
                 child = children[-1]
 
                 if type(child) is TerminalNode:
-                    nfa.add_transition(current_state, z3.Re(child.symbol), final_state)
+                    nfa.add_transition(current_state, Singleton(child.symbol), final_state)
                 else:
-                    nfa.add_transition(current_state, z3.Re(""), child.quote_symbol(), safe=False)
+                    nfa.add_transition(current_state, Singleton(""), child.quote_symbol(), safe=False)
                     if child not in visited:
                         visited.append(child)
                         queue.append(child)
@@ -294,19 +291,19 @@ class RegexConverter:
             transitions = nfa.transitions_between(p, q)
             if len(transitions) >= 1:
                 nfa.delete_transitions(transitions)
-                nfa.add_transition(p, z3.Union(*[l for (_, l, _) in transitions]), q)
+                nfa.add_transition(p, union(*[l for (_, l, _) in transitions]), q)
 
         self.nfa_cache[node.symbol] = nfa
 
         return nfa
 
-    def tree_to_regex(self, node: Union[str, Node]) -> z3.ReRef:
+    def tree_to_regex(self, node: str | Node) -> Regex:
         if type(node) is str:
             node = self.grammar_graph.get_node(node)
             assert node
 
-        if type(node) is TerminalNode:
-            return z3.Re(node.symbol)
+        if isinstance(node, TerminalNode):
+            return Singleton(node.symbol)
 
         assert type(node) is NonterminalNode
         assert self.grammar_graph.subgraph(node).is_tree()
@@ -314,35 +311,14 @@ class RegexConverter:
         node: NonterminalNode
         choice_node: ChoiceNode
 
-        union_nodes: List[z3.ReRef] = []
+        union_nodes: List[Regex] = []
         for choice_node in node.children:
             children_regexes = [self.tree_to_regex(child) for child in choice_node.children]
-            child_result = re_concat(*children_regexes)
+            child_result = concat(*children_regexes)
 
             union_nodes.append(child_result)
 
-        assert union_nodes
-
-        if len(union_nodes) == 1:
-            return union_nodes[0]
-        else:
-            if (self.compress_unions
-                    and all(union_node.decl().kind() == z3.Z3_OP_SEQ_TO_RE for union_node in union_nodes)):
-                # Compress single-char unions to ranges
-                chars = [union_node.children()[0].as_string() for union_node in union_nodes]
-                char_codes = sorted([ord(char) for char in chars if char])
-                consecutive_char_codes = consecutive_numbers(char_codes)
-
-                union_nodes = [
-                    z3.Re(chr(group[0])) if len(group) == 1 else
-                    z3.Range(chr(group[0]), chr(group[-1]))
-                    for group in consecutive_char_codes
-                ]
-
-                if "" in chars:
-                    union_nodes.append(z3.Re(""))
-
-            return z3.Union(*union_nodes)
+        return union(*union_nodes)
 
     def unwind_grammar(self,
                        problematic_expansions_str: OrderedSet[Tuple[NonterminalType, int, int]]) -> Grammar:
@@ -370,7 +346,7 @@ class RegexConverter:
             expansion = canonical_grammar[nonterminal][expansion_idx]
             nonterminal_to_expand: Nonterminal
             nonterminal_to_expand = expansion[nonterminal_idx]
-            assert type(nonterminal_to_expand) is Nonterminal
+            assert isinstance(nonterminal_to_expand is Nonterminal)
             assert str(nonterminal_to_expand) not in allowed_symbols, f"Symbol {nonterminal_to_expand} is " \
                                                                       f"an allowed symbol and shouldn't be " \
                                                                       f"expanded!"
@@ -445,7 +421,7 @@ class RegexConverter:
         assert self.is_regular(node), f"The sub grammar at node {node.symbol} is not regular " \
                                       f"and cannot be converted to an NFA."
 
-    def is_regular(self, nonterminal: Union[str, NonterminalNode]) -> bool:
+    def is_regular(self, nonterminal: str | NonterminalNode) -> bool:
         """
         Checks whether the language generated from "grammar" starting in "nonterminal" is regular.
         This is the case if all productions either are left- or rightlinear, with the exception that
@@ -453,7 +429,6 @@ class RegexConverter:
         regular expressions.
 
         :param nonterminal: A nonterminal within this grammar.
-        :param call_seq: A tuple of already seen nodes, used to break infinite recursion.
         :return: True iff the language defined by the sublanguage of grammar's language when
                  starting in nonterminal is regular.
         """
@@ -473,9 +448,9 @@ class RegexConverter:
         return result
 
     def nonregular_expansions(self,
-                              nonterminal: Union[str, NonterminalNode],
+                              nonterminal: str | NonterminalNode,
                               call_seq: Tuple = (),
-                              problems: Union[None, OrderedSet[Tuple[NonterminalType, int, int]]] = None) -> \
+                              problems: Optional[OrderedSet[Tuple[NonterminalType, int, int]]] = None) -> \
             OrderedSet[Tuple[NonterminalType, int, int]]:
         """
         Returns pointers to expansions in a grammar which make the grammar non-regular. Those can then
@@ -562,9 +537,45 @@ class RegexConverter:
 
         return result
 
-    def str_to_nonterminal_node(self, node: Union[str, Node]) -> NonterminalNode:
+    def str_to_nonterminal_node(self, node: str | Node) -> NonterminalNode:
         if type(node) is str:
             node = self.grammar_graph.get_node(node)
             assert node
         assert type(node) is NonterminalNode
         return node
+
+
+def compress_unions(regex: Regex) -> Regex:
+    # We assume that all unions are flattened, i.e., there are no unions directly nested inside unions
+    if isinstance(regex, Union):
+        # Compress single-char unions to ranges
+        char_nodes = [
+            child for child in regex.children
+            if isinstance(child, Singleton)
+        ]
+
+        others = [compress_unions(child) for child in regex.children if child not in char_nodes]
+
+        chars = OrderedSet([char_node.child for char_node in char_nodes])
+        char_codes = sorted([ord(char) for char in chars if char])
+        consecutive_char_codes = consecutive_numbers(char_codes)
+
+        union_nodes = [
+            Singleton(chr(group[0])) if len(group) == 1
+            else Range(chr(group[0]), chr(group[-1]))
+            for group in consecutive_char_codes
+        ]
+        union_nodes += others
+
+        if "" in chars:
+            union_nodes.append(Singleton(""))
+
+        return union(*union_nodes)
+
+    if isinstance(regex, Star):
+        return Star(compress_unions(regex.child))
+
+    if isinstance(regex, Concat):
+        return concat(*[compress_unions(child) for child in regex.children])
+
+    return regex

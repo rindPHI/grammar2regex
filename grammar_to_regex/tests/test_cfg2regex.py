@@ -1,20 +1,19 @@
 import copy
 import logging
 import string
-import time
 import unittest
-from typing import Union, List
+from typing import Optional
 
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR, srange, convert_ebnf_grammar
-from fuzzingbook.GreyboxGrammarFuzzer import XML_GRAMMAR
 from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
 from string_sampler.sampler import StringSampler, StringSamplerConfiguration, InitialSolutionStrategy
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
 from grammar_to_regex.helpers import delete_unreachable
+from grammar_to_regex.regex import Concat, Star, Union, Range, Singleton, regex_to_z3
 from grammar_to_regex.tests.test_helpers import TestHelpers
 
 # ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
@@ -94,7 +93,7 @@ class TestRegexConverter(unittest.TestCase):
 
     def test_us_phone_grammar_to_regex_from_tree(self):
         checker = RegexConverter(US_PHONE_GRAMMAR)
-        regex = checker.tree_to_regex("<start>")
+        regex = regex_to_z3(checker.tree_to_regex("<start>"))
 
         self.assertEqual(z3.sat, self.smt_check(z3.InRe("(200)200-0000", regex)))
         self.assertEqual(z3.unsat, self.smt_check(z3.InRe("(000)200-0000", regex)))
@@ -103,7 +102,7 @@ class TestRegexConverter(unittest.TestCase):
     def test_us_phone_grammar_to_regex(self):
         logging.basicConfig(level=logging.INFO)
         checker = RegexConverter(US_PHONE_GRAMMAR)
-        regex = checker.right_linear_grammar_to_regex("<start>")
+        regex = regex_to_z3(checker.right_linear_grammar_to_regex("<start>"))
 
         self.check_grammar_regex_inclusion(regex, US_PHONE_GRAMMAR)
 
@@ -114,7 +113,7 @@ class TestRegexConverter(unittest.TestCase):
 
     def test_toy_grammar_to_regex(self):
         checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
-        regex = checker.right_linear_grammar_to_regex("<A>")
+        regex = regex_to_z3(checker.right_linear_grammar_to_regex("<A>"))
 
         self.check_grammar_regex_inclusion(regex, RIGHT_LINEAR_TOY_GRAMMAR)
 
@@ -127,7 +126,7 @@ class TestRegexConverter(unittest.TestCase):
         }
 
         checker = RegexConverter(grammar)
-        regex = checker.right_linear_grammar_to_regex("<A>")
+        regex = regex_to_z3(checker.right_linear_grammar_to_regex("<A>"))
 
         self.check_grammar_regex_inclusion(regex, grammar)
 
@@ -140,7 +139,7 @@ class TestRegexConverter(unittest.TestCase):
         }
 
         checker = RegexConverter(grammar)
-        regex = checker.left_linear_grammar_to_regex("<A>")
+        regex = regex_to_z3(checker.left_linear_grammar_to_regex("<A>"))
 
         self.check_grammar_regex_inclusion(regex, grammar)
 
@@ -148,7 +147,7 @@ class TestRegexConverter(unittest.TestCase):
         logging.basicConfig(level=logging.DEBUG)
         converter = RegexConverter(JSON_GRAMMAR)
         grammar = converter.grammar_graph.subgraph("<string>").to_grammar()
-        regex = converter.right_linear_grammar_to_regex("<string>")
+        regex = regex_to_z3(converter.right_linear_grammar_to_regex("<string>"))
 
         self.check_grammar_regex_inclusion(regex, grammar)
 
@@ -282,11 +281,12 @@ class TestRegexConverter(unittest.TestCase):
 
         regex = converter.to_regex("<start>")
 
-        self.check_grammar_regex_inclusion(regex, JSON_GRAMMAR, allowed_failure_percentage=5, strict=False,
-                                           string_sampler_config=StringSamplerConfiguration(
-                                               initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
-                                               max_size_new_neighborhood=200,
-                                           ))
+        self.check_grammar_regex_inclusion(
+            regex, JSON_GRAMMAR, allowed_failure_percentage=5, strict=False,
+            string_sampler_config=StringSamplerConfiguration(
+                initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
+                max_size_new_neighborhood=200,
+            ))
 
     def test_unwind_expansion(self):
         grammar = {
@@ -317,13 +317,52 @@ class TestRegexConverter(unittest.TestCase):
         solver.add(z3.InRe(z3.StringVal("\n"), regex))
         self.assertEqual(z3.unsat, solver.check())
 
-    def check_grammar_regex_inclusion(self,
-                                      regex: z3.ReRef,
-                                      grammar: Grammar,
-                                      runs: int = 100,
-                                      allowed_failure_percentage: int = 0,
-                                      strict: bool = True,
-                                      string_sampler_config: Union[None, StringSamplerConfiguration] = None):
+    def test_ranges_xml_id(self):
+        xml_id_grammar = {
+            "<start>": ["<id>"],
+            "<id>": [
+                "<id-no-prefix>",
+                "<id-with-prefix>"
+            ],
+            "<id-no-prefix>": [
+                "<id-start-char>",
+                "<id-start-char><id-chars>",
+            ],
+            "<id-with-prefix>": ["<id-no-prefix>:<id-no-prefix>"],
+            "<id-start-char>": srange("_" + string.ascii_letters),
+            "<id-chars>": ["<id-char>", "<id-char><id-chars>"],
+            "<id-char>": ["<id-start-char>"] + srange("-." + string.digits),
+        }
+
+        converter = RegexConverter(xml_id_grammar, max_num_expansions=20, compress_unions=True)
+
+        regex = converter.to_regex("<id-chars>", convert_to_z3=False)
+        self.assertEqual(
+            Concat(children=tuple([
+                Star(child=Union(children=(
+                    Range(from_char='-', to_char='.'),
+                    Range(from_char='0', to_char='9'),
+                    Range(from_char='A', to_char='Z'),
+                    Singleton(child='_'),
+                    Range(from_char='a', to_char='z')))),
+                Union(children=(
+                    Range(from_char='-', to_char='.'),
+                    Range(from_char='0', to_char='9'),
+                    Range(from_char='A', to_char='Z'),
+                    Singleton(child='_'),
+                    Range(from_char='a', to_char='z')))])), regex)
+
+        # regex = converter.to_regex("<id>", convert_to_z3=False)
+        # print(regex)
+
+    def check_grammar_regex_inclusion(
+            self,
+            regex: z3.ReRef,
+            grammar: Grammar,
+            runs: int = 100,
+            allowed_failure_percentage: int = 0,
+            strict: bool = True,
+            string_sampler_config: Optional[StringSamplerConfiguration] = None):
         """
         Asserts that regex is, if allowed_failure_percentage is 0, equivalent to grammar, and otherwise a
         strict subset of grammar.
