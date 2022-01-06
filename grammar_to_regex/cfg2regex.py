@@ -2,7 +2,7 @@ import copy
 import itertools
 import logging
 from enum import Enum
-from typing import Dict, List, Tuple, Generator, Optional
+from typing import Dict, List, Tuple, Generator, Optional, cast
 
 import z3
 from grammar_graph.gg import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
@@ -344,9 +344,8 @@ class RegexConverter:
             nonterminal, expansion_idx, nonterminal_idx = problematic_expansions.pop()
 
             expansion = canonical_grammar[nonterminal][expansion_idx]
-            nonterminal_to_expand: Nonterminal
-            nonterminal_to_expand = expansion[nonterminal_idx]
-            assert isinstance(nonterminal_to_expand is Nonterminal)
+            nonterminal_to_expand: Nonterminal = cast(Nonterminal, expansion[nonterminal_idx])
+            assert isinstance(nonterminal_to_expand, Nonterminal)
             assert str(nonterminal_to_expand) not in allowed_symbols, f"Symbol {nonterminal_to_expand} is " \
                                                                       f"an allowed symbol and shouldn't be " \
                                                                       f"expanded!"
