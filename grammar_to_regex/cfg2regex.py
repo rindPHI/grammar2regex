@@ -12,7 +12,8 @@ from grammar_to_regex.helpers import reverse_grammar, expand_nonterminals, delet
     grammar_to_typed_canonical, GrammarElem, str2grammar_elem, Nonterminal, typed_canonical_to_grammar, \
     consecutive_numbers
 from grammar_to_regex.nfa import NFA, Transition
-from grammar_to_regex.regex import Regex, concat, Star, Union, Singleton, regex_to_z3, union, Range, Concat, star
+from grammar_to_regex.regex import Regex, concat, Star, Union, Singleton, regex_to_z3, union, Range, Concat, star, \
+    epsilon
 from grammar_to_regex.type_defs import Grammar, NonterminalType
 
 
@@ -148,8 +149,7 @@ class RegexConverter:
             self.logger.debug(f"Eliminating state {s} ({len(predecessors)} preds / {len(successors)} succs), "
                               f"{len(nfa.states)} states left")
 
-            E_s_s = label_from_singleton_tr(loops)
-            E_s_s_star = None if E_s_s is None else Star(E_s_s)
+            E_s_s = label_from_singleton_tr(loops) or epsilon()
 
             for p, q in itertools.product(predecessors, successors):
                 # New label: E(p, q) + E(p, s)E(s, s)*E(s, q)
@@ -164,9 +164,8 @@ class RegexConverter:
                 E_s_q = label_from_singleton_tr(s_q_trans)
                 assert E_s_q is not None
 
-                # E(p, s)E(s, s)*
-                regex = E_p_s if E_s_s_star is None else concat(E_p_s, E_s_s_star)
-                regex = concat(regex, E_s_q)
+                # E(p, s)E(s, s)*E(s, q)
+                regex = concat(E_p_s, star(E_s_s), E_s_q)
 
                 if E_p_q is not None:
                     regex = union(E_p_q, regex)
@@ -190,10 +189,10 @@ class RegexConverter:
             p_q_trans = nfa.transitions_between(p, q)
             q_q_trans = nfa.transitions_between(q, q)
 
-            E_p_q = label_from_singleton_tr(p_q_trans) or Singleton("")
+            E_p_q = label_from_singleton_tr(p_q_trans) or epsilon()
             assert E_p_q is not None
-            E_p_p = label_from_singleton_tr(p_p_trans) or Singleton("")
-            E_q_q = label_from_singleton_tr(q_q_trans) or Singleton("")
+            E_p_p = label_from_singleton_tr(p_p_trans) or epsilon()
+            E_q_q = label_from_singleton_tr(q_q_trans) or epsilon()
 
             # E(p,p)*E(p,q)E(q,q)*
             return concat(star(E_p_p), E_p_q, star(E_q_q))
@@ -265,8 +264,8 @@ class RegexConverter:
                             # from sub_nfa are already present in nfa.
                             nfa.add_transitions(sub_nfa.transitions, safe=False)
 
-                            if (current_state, Singleton(""), sub_nfa.initial_state) not in nfa.transitions:
-                                nfa.add_transition(current_state, Singleton(""), sub_nfa.initial_state)
+                            if (current_state, epsilon(), sub_nfa.initial_state) not in nfa.transitions:
+                                nfa.add_transition(current_state, epsilon(), sub_nfa.initial_state)
 
                     current_state = next_state
 
@@ -275,7 +274,7 @@ class RegexConverter:
                 if type(child) is TerminalNode:
                     nfa.add_transition(current_state, Singleton(child.symbol), final_state)
                 else:
-                    nfa.add_transition(current_state, Singleton(""), child.quote_symbol(), safe=False)
+                    nfa.add_transition(current_state, epsilon(), child.quote_symbol(), safe=False)
                     if child not in visited:
                         visited.append(child)
                         queue.append(child)

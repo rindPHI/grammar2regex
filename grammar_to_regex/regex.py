@@ -48,6 +48,10 @@ class Range:
 Regex = Singleton | Union | Concat | Range | Star
 
 
+def epsilon() -> Regex:
+    return Singleton("")
+
+
 def union(*children: Regex) -> Regex:
     assert children
 
@@ -71,7 +75,7 @@ def concat(*children: Regex) -> Regex:
     children = [child for child in children if not is_epsilon(child)]
 
     if not children:
-        return Singleton("")
+        return epsilon()
 
     if len(children) == 1:
         return children[0]

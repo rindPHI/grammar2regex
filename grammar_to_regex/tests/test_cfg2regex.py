@@ -112,7 +112,6 @@ class TestRegexConverter(unittest.TestCase):
         # No Exception
 
     def test_simple_grammar_to_regex(self):
-        # grammar = RIGHT_LINEAR_TOY_GRAMMAR
         # a* b
         grammar = {
             "<start>": ["<A>"],
