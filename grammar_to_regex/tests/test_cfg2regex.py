@@ -383,8 +383,6 @@ class TestRegexConverter(unittest.TestCase):
         idchar_regex = union(Range('-', '.'), Range('0', '9'), Range('A', 'Z'), Singleton('_'), Range('a', 'z'))
         id_chars_regex = concat(Star(idchar_regex), idchar_regex)
         computed_idchars_regex = converter.to_regex("<id-chars>", convert_to_z3=False)
-        print(computed_idchars_regex)
-        return
         self.assertEqual(id_chars_regex, computed_idchars_regex)
 
         id_start_char_regex = union(Singleton('_'), Range('a', 'c'))
