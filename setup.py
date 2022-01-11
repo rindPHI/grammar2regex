@@ -195,7 +195,7 @@ setup(
       "notedown==1.5.1",
       "numpy==1.21.4",
       "outcome==1.1.0",
-      "packaging==21.0",
+      "packaging>=21.0",
       "pandas==1.3.4",
       "pandoc-attributes==0.1.7",
       "pandocfilters==1.5.0",
