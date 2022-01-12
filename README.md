@@ -66,10 +66,11 @@ Grammar2Regex requires Python 3.10.
 To install Grammar2Regex, run
 
 ```shell
-pip install -r requirements.txt
+python3 setup.py sdist
+pip3 install dist/grammar2regex-0.0.1.tar.gz
 ```
 
-We recommend installation in a virtual environment, also since our `requirements.txt` contains pinned
+We recommend installation in a virtual environment, also since our requirements list pinned
 version numbers. If you experience any problems with the pinned versions, feed free to find a working,
 relaxed version and submit a pull request :)
 
