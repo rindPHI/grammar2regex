@@ -555,7 +555,9 @@ def compress_unions(regex: Regex) -> Regex:
         others = [compress_unions(child) for child in regex.children if child not in char_nodes]
 
         chars = OrderedSet([char_node.child for char_node in char_nodes])
-        char_codes = sorted([ord(char) for char in chars if char])
+        # NOTE: In some cases, string sequences that are longer than one char can appear in chars;
+        #       for an XML grammar, e.g., escaped sequences like &quot; might appear.
+        char_codes = sorted([ord(char) for char in chars if len(char) == 1])
         consecutive_char_codes = consecutive_numbers(char_codes)
 
         union_nodes = [
@@ -565,8 +567,8 @@ def compress_unions(regex: Regex) -> Regex:
         ]
         union_nodes += others
 
-        if "" in chars:
-            union_nodes.append(Singleton(""))
+        # NOTE: `longer_str` can also include the empty string.
+        union_nodes.extend([Singleton(longer_str) for longer_str in chars if len(longer_str) != 1])
 
         return union(*union_nodes)
 
