@@ -4,7 +4,6 @@ import string
 import unittest
 from typing import Optional, Dict, List
 
-import pytest
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR, srange, convert_ebnf_grammar
@@ -14,7 +13,7 @@ from string_sampler.sampler import StringSampler, StringSamplerConfiguration, In
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
 from grammar_to_regex.helpers import delete_unreachable
-from grammar_to_regex.regex import Concat, Star, Union, Range, Singleton, regex_to_z3, concat, union
+from grammar_to_regex.regex import Concat, Star, Range, Singleton, regex_to_z3, concat, union
 from grammar_to_regex.tests.test_helpers import TestHelpers
 
 # ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
