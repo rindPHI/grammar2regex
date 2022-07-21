@@ -1,13 +1,10 @@
+import re
 import typing
 from itertools import groupby
 from operator import itemgetter, sub
 from typing import List, Set, Union, Dict
 
-from fuzzingbook.Grammars import unreachable_nonterminals
-from fuzzingbook.Parser import canonical
-from orderedset import OrderedSet
-
-from grammar_to_regex.type_defs import Grammar, NonterminalType
+from grammar_to_regex.type_defs import Grammar, CanonicalGrammar
 
 
 def split_expansion(expansion: str) -> List[str]:
@@ -106,11 +103,30 @@ def str2grammar_elem(elem: str, cache: Union[None, Dict[str, GrammarElem]] = Non
         return cache.setdefault(elem, result)
 
 
+def canonical(grammar: Grammar) -> CanonicalGrammar:
+    # Slightly optimized w.r.t. Fuzzing Book version: Call to split on
+    # compiled regex instead of fresh compilation every time.
+    def split(expansion):
+        if isinstance(expansion, tuple):
+            expansion = expansion[0]
+
+        return [
+            token
+            for token in RE_NONTERMINAL.split(expansion)
+            if token]
+
+    return {
+        k: [split(expression) for expression in alternatives]
+        for k, alternatives in grammar.items()
+    }
+
+
 TypedCanonicalGrammar = Dict[GrammarElem, List[List[GrammarElem]]]
 
 
-def grammar_to_typed_canonical(ordinary_grammar: Grammar,
-                               cache: Union[None, Dict[str, GrammarElem]] = None) -> TypedCanonicalGrammar:
+def grammar_to_typed_canonical(
+        ordinary_grammar: Grammar,
+        cache: Union[None, Dict[str, GrammarElem]] = None) -> TypedCanonicalGrammar:
     canonical_grammar = canonical(ordinary_grammar)
     typed_canonical_grammar = {}
 
@@ -179,6 +195,32 @@ def expand_nonterminals(grammar: Grammar,
             if not any([elem for elem in expansion
                         if type(elem) is Nonterminal and
                         elem not in allowed_nonterminals])]
+
+
+RE_NONTERMINAL = re.compile(r'(<[^<> ]*>)')
+
+
+def nonterminals(expansion: str) -> List[str]:
+    return RE_NONTERMINAL.findall(expansion)
+
+
+def reachable_nonterminals(grammar: Grammar, _start_symbol: str = '<start>') -> Set[str]:
+    reachable = set()
+
+    def _find_reachable_nonterminals(grammar, symbol):
+        nonlocal reachable
+        reachable.add(symbol)
+        for expansion in grammar.get(symbol, []):
+            for nonterminal in nonterminals(expansion):
+                if nonterminal not in reachable:
+                    _find_reachable_nonterminals(grammar, nonterminal)
+
+    _find_reachable_nonterminals(grammar, _start_symbol)
+    return reachable
+
+
+def unreachable_nonterminals(grammar: Grammar, _start_symbol='<start>') -> Set[str]:
+    return grammar.keys() - reachable_nonterminals(grammar, _start_symbol)
 
 
 def delete_unreachable(grammar):

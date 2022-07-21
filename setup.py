@@ -132,18 +132,8 @@ setup(
     # For an analysis of "install_requires" vs pip's requirements files see:
     # https://packaging.python.org/en/latest/requirements.html
     install_requires=[
-        "fuzzingbook>=1.1",
         "grammargraph @ git+https://github.com/rindPHI/GrammarGraph",
         "proxyorderedset @ git+https://github.com/rindPHI/proxyorderedset",
-        "pytest-cov>=3.0.0",
-        "pytest-forked>=1.3.0",
-        "pytest-html>=3.1.1",
-        "pytest-profiling>=1.7.0",
-        "pytest-pycharm>=0.7.0",
-        "pytest-rerunfailures>=10.2",
-        "pytest-xdist>=2.4.0",
-        "pytest>=6.2.5",
-        "pytest>=7.1.2",
         "wheel>=0.37.1",
         "z3-solver>=4.8.17.0"
     ],  # Optional
@@ -155,7 +145,18 @@ setup(
     #
     # Similar to `install_requires` above, these must be valid existing
     # projects.
-    extras_require={"dev": []},  # Optional
+    extras_require={"test": [
+        "fuzzingbook>=1.1",
+        "pytest-cov>=3.0.0",
+        "pytest-forked>=1.3.0",
+        "pytest-html>=3.1.1",
+        "pytest-profiling>=1.7.0",
+        "pytest-pycharm>=0.7.0",
+        "pytest-rerunfailures>=10.2",
+        "pytest-xdist>=2.4.0",
+        "pytest>=6.2.5",
+        "pytest>=7.1.2",
+    ]},  # Optional
     # If there are data files included in your packages that need to be
     # installed, specify them here.
     #

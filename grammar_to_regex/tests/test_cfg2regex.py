@@ -2,18 +2,16 @@ import copy
 import logging
 import string
 import unittest
-from typing import Optional, Dict, List
 
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR, srange, convert_ebnf_grammar
 from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
-from string_sampler.sampler import StringSampler, StringSamplerConfiguration, InitialSolutionStrategy
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
 from grammar_to_regex.helpers import delete_unreachable
-from grammar_to_regex.regex import Concat, Star, Range, Singleton, regex_to_z3, concat, union
+from grammar_to_regex.regex import Concat, Star, Singleton, regex_to_z3, concat
 from grammar_to_regex.tests.test_helpers import TestHelpers
 
 # ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
@@ -105,7 +103,7 @@ class TestRegexConverter(unittest.TestCase):
         regex = checker.to_regex("<start>", convert_to_z3=False)
         self.logger.info(regex)
 
-        self.check_grammar_regex_inclusion(regex_to_z3(regex), US_PHONE_GRAMMAR, use_string_sampler=False)
+        self.check_grammar_regex_inclusion(regex_to_z3(regex), US_PHONE_GRAMMAR)
 
     def test_toy_grammar_to_nfa(self):
         checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
@@ -122,14 +120,14 @@ class TestRegexConverter(unittest.TestCase):
         regex = checker.right_linear_grammar_to_regex("<A>")
 
         self.assertEqual(Concat(children=(Star(child=Singleton(child='a')), Singleton(child='b'))), regex)
-        self.check_grammar_regex_inclusion(regex_to_z3(regex), grammar, use_string_sampler=False)
+        self.check_grammar_regex_inclusion(regex_to_z3(regex), grammar)
 
     def test_toy_grammar_to_regex(self):
         grammar = RIGHT_LINEAR_TOY_GRAMMAR
         checker = RegexConverter(grammar)
         regex = checker.right_linear_grammar_to_regex("<A>")
 
-        self.check_grammar_regex_inclusion(regex_to_z3(regex), grammar, use_string_sampler=False)
+        self.check_grammar_regex_inclusion(regex_to_z3(regex), grammar)
 
     def test_simple_toy_grammar_to_regex(self):
         grammar = {
@@ -172,38 +170,8 @@ class TestRegexConverter(unittest.TestCase):
 
         self.check_grammar_regex_inclusion(
             regex_to_z3(regex), JSON_GRAMMAR, allowed_failure_percentage=5, strict=False,
-            runs=10,
-            string_sampler_config=StringSamplerConfiguration(
-                initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
-                max_size_new_neighborhood=200,
-            ))
+            runs=10)
 
-    def test_range_union_equivalence(self):
-        logging.basicConfig(level=logging.DEBUG)
-
-        long_union = z3.Plus(
-            z3.Union(z3.Re("0"), z3.Re("1"), z3.Re("2"), z3.Re("3"), z3.Re("4"), z3.Re("5"), z3.Re("6"),
-                     z3.Re("7"), z3.Re("8"), z3.Re("9"), z3.Re("a"), z3.Re("b"), z3.Re("c"), z3.Re("d"),
-                     z3.Re("e"), z3.Re("f"), z3.Re("g"), z3.Re("h"), z3.Re("i"), z3.Re("j"), z3.Re("k"),
-                     z3.Re("l"), z3.Re("m"), z3.Re("n"), z3.Re("o"), z3.Re("p"), z3.Re("q"), z3.Re("r"),
-                     z3.Re("s"), z3.Re("t"), z3.Re("u"), z3.Re("v"), z3.Re("w"), z3.Re("x"), z3.Re("y"),
-                     z3.Re("z"), z3.Re("A"), z3.Re("B"), z3.Re("C"), z3.Re("D"), z3.Re("E"), z3.Re("F"),
-                     z3.Re("G"), z3.Re("H"), z3.Re("I"), z3.Re("J"), z3.Re("K"), z3.Re("L"), z3.Re("M"),
-                     z3.Re("N"), z3.Re("O"), z3.Re("P"), z3.Re("Q"), z3.Re("R"), z3.Re("S"), z3.Re("T"),
-                     z3.Re("U"), z3.Re("V"), z3.Re("W"), z3.Re("X"), z3.Re("Y"), z3.Re("Z"), z3.Re("!"),
-                     z3.Re("#"), z3.Re("$"), z3.Re("%"), z3.Re("&"), z3.Re("'"), z3.Re("("), z3.Re(")"),
-                     z3.Re("*"), z3.Re("+"), z3.Re(","), z3.Re("-"), z3.Re("."), z3.Re("/"), z3.Re(":"),
-                     z3.Re(";"), z3.Re("<"), z3.Re("="), z3.Re(">"), z3.Re("?"), z3.Re("@"), z3.Re("["),
-                     z3.Re("]"), z3.Re("^"), z3.Re("_"), z3.Re("`"), z3.Re("{"), z3.Re("|"), z3.Re("}"),
-                     z3.Re("~"), z3.Re(" ")))
-
-        short_range_union = z3.Plus(z3.Union(z3.Range(" ", "!"), z3.Range("#", "["), z3.Range("]", "~")))
-
-        grammar = copy.deepcopy(JSON_GRAMMAR)
-        grammar["<start>"] = ["<characters>"]
-        delete_unreachable(grammar)
-
-        self.check_regex_equivalence(grammar, long_union, short_range_union)
 
     # @pytest.mark.skip(reason="Fails currently in NFA conversion, needs to be fixed.")
     def test_csv_grammar_conversion(self):
@@ -217,11 +185,7 @@ class TestRegexConverter(unittest.TestCase):
         delete_unreachable(grammar)
 
         self.check_grammar_regex_inclusion(
-            regex_to_z3(long_union_regex), grammar, allowed_failure_percentage=5, strict=False,
-            string_sampler_config=StringSamplerConfiguration(
-                initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
-                max_size_new_neighborhood=200,
-            ))
+            regex_to_z3(long_union_regex), grammar, allowed_failure_percentage=5, strict=False)
 
     def test_right_linear_id_grammar_conversion(self):
         logging.basicConfig(level=logging.DEBUG)
@@ -235,68 +199,8 @@ class TestRegexConverter(unittest.TestCase):
         converter = RegexConverter(grammar)
         id_regex = converter.to_regex("<id>")
 
-        self.check_grammar_regex_inclusion(
-            id_regex, grammar, allowed_failure_percentage=5, strict=False,
-            string_sampler_config=StringSamplerConfiguration(
-                initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
-                max_size_new_neighborhood=200,
-            ))
+        self.check_grammar_regex_inclusion(id_regex, grammar, allowed_failure_percentage=5, strict=False)
 
-    def test_range_union_equivalence_csv_fields(self):
-        logging.basicConfig(level=logging.DEBUG)
-
-        grammar = copy.deepcopy(CSV_GRAMMAR)
-        grammar["<start>"] = ["<raw-field>"]
-        delete_unreachable(grammar)
-
-        converter = RegexConverter(grammar, max_num_expansions=20, compress_unions=False)
-        long_union_regex = converter.to_regex("<raw-field>")
-
-        converter = RegexConverter(grammar, max_num_expansions=20, compress_unions=True)
-        short_range_union = converter.to_regex("<raw-field>")
-
-        self.check_regex_equivalence(grammar, long_union_regex, short_range_union)
-
-    def check_regex_equivalence(self, grammar, re_1, re_2):
-        self.logger.debug("Checking inclusion of %s in %s", re_1, re_2)
-        self.check_regex_inclusion(grammar, re_1, re_2)
-        self.logger.debug("Checking inclusion of %s in %s", re_2, re_1)
-        self.check_regex_inclusion(grammar, re_2, re_1)
-
-    def check_regex_inclusion(self, grammar, re_1, re_2):
-        # Generate from re_1, check whether this is in re_2
-        string_sampler_config = StringSamplerConfiguration(reuse_initial_solution=True)
-        sampler = StringSampler(
-            z3.InRe(z3.String("var"), re_1),
-            z3.BoolVal(True),
-            grammars={"var": grammar},
-            config=string_sampler_config
-        )
-        solutions = sampler.get_solutions()
-        num_inputs = 0
-        while num_inputs < 100:
-            try:
-                new_assignments = next(solutions)
-            except StopIteration:
-                break
-
-            num_inputs += len(new_assignments)
-            for new_assignment in new_assignments:
-                for _, inp in new_assignment.items():
-                    # self.logger.debug("Asserting that \"%s\" is in regex %d", inp, i + 1)
-                    formula = z3.InRe(z3.StringVal(inp), re_1)
-                    solver = z3.Solver()
-                    solver.add(formula)
-                    # self.assertEqual(z3.sat, solver.check())
-                    if solver.check() != z3.sat:
-                        continue
-
-                    self.logger.debug("Checking whether \"%s\" is in regex %s", inp, re_2)
-                    formula = z3.InRe(z3.StringVal(inp), re_2)
-                    solver = z3.Solver()
-                    solver.add(formula)
-
-                    self.assertEqual(z3.sat, solver.check(), f"Input {inp} is not in regex {re_2}")
 
     def test_json_object_to_regex(self):
         logging.basicConfig(level=logging.DEBUG)
@@ -304,12 +208,7 @@ class TestRegexConverter(unittest.TestCase):
 
         regex = converter.to_regex("<start>")
 
-        self.check_grammar_regex_inclusion(
-            regex, JSON_GRAMMAR, allowed_failure_percentage=5, strict=False,
-            string_sampler_config=StringSamplerConfiguration(
-                initial_solution_strategy=InitialSolutionStrategy.SMT_PURE,
-                max_size_new_neighborhood=200,
-            ))
+        self.check_grammar_regex_inclusion(regex, JSON_GRAMMAR, allowed_failure_percentage=5, strict=False)
 
     def test_unwind_expansion(self):
         grammar = {
@@ -360,40 +259,6 @@ class TestRegexConverter(unittest.TestCase):
                 Singleton('a')))
         self.assertEqual(expected_id_with_prefix_regex, computed_id_with_prefix_regex)
 
-    def test_ranges_xml_id(self):
-        xml_id_grammar: Dict[str, List[str]] = {
-            "<start>": ["<id>"],
-            "<id>": [
-                "<id-no-prefix>",
-                "<id-with-prefix>"
-            ],
-            "<id-no-prefix>": [
-                "<id-start-char>",
-                "<id-start-char><id-chars>",
-            ],
-            "<id-with-prefix>": ["<id-no-prefix>:<id-no-prefix>"],
-            "<id-start-char>": srange("_" + string.ascii_letters),
-            "<id-chars>": ["<id-char>", "<id-char><id-chars>"],
-            "<id-char>": ["<id-start-char>"] + srange("-." + string.digits),
-        }
-
-        converter = RegexConverter(xml_id_grammar, compress_unions=True)
-
-        idchar_regex = union(Range('-', '.'), Range('0', '9'), Range('A', 'Z'), Singleton('_'), Range('a', 'z'))
-        id_chars_regex = concat(Star(idchar_regex), idchar_regex)
-        computed_idchars_regex = converter.to_regex("<id-chars>", convert_to_z3=False)
-        self.assertEqual(id_chars_regex, computed_idchars_regex)
-
-        id_start_char_regex = union(Singleton('_'), Range('a', 'c'))
-        id_no_prefix_regex = union(id_start_char_regex, concat(id_start_char_regex, id_chars_regex))
-        id_with_prefix_regex = concat(id_no_prefix_regex, Singleton(":"), id_no_prefix_regex)
-
-        computed_id_with_prefix_regex = converter.to_regex("<id-with-prefix>", convert_to_z3=False)
-        self.logger.info(computed_id_with_prefix_regex)
-        self.check_regex_equivalence(
-            xml_id_grammar,
-            regex_to_z3(id_with_prefix_regex),
-            regex_to_z3(computed_id_with_prefix_regex))
 
     def check_grammar_regex_inclusion(
             self,
@@ -401,9 +266,7 @@ class TestRegexConverter(unittest.TestCase):
             grammar: Grammar,
             runs: int = 100,
             allowed_failure_percentage: int = 0,
-            strict: bool = True,
-            string_sampler_config: Optional[StringSamplerConfiguration] = None,
-            use_string_sampler: bool = True):
+            strict: bool = True):
         """
         Asserts that regex is, if allowed_failure_percentage is 0, equivalent to grammar, and otherwise a
         strict subset of grammar.
@@ -411,46 +274,21 @@ class TestRegexConverter(unittest.TestCase):
         fuzzer = GrammarCoverageFuzzer(grammar)
         parser = EarleyParser(grammar)
 
-        if not string_sampler_config:
-            string_sampler_config = StringSamplerConfiguration(reuse_initial_solution=True)
-
         # regex \subset grammar
-        if use_string_sampler:
-            sampler = StringSampler(
-                z3.InRe(z3.String("var"), regex),
-                z3.BoolVal(True),
-                grammars={"var": grammar},
-                config=string_sampler_config
-            )
+        prev_solutions: OrderedSet[str] = OrderedSet()
+        for _ in range(runs):
+            s = z3.Solver()
+            s.add(z3.InRe(z3.String("var"), regex))
+            for p in prev_solutions:
+                s.add(z3.Not(z3.String("var") == z3.StringVal(p)))
+            assert s.check() == z3.sat
 
-            num_inputs = 0
-            for new_assignments in sampler.get_solutions():
-                num_inputs += len(new_assignments)
-                self.logger.debug(f"Generated {num_inputs} instantiations")
-                for new_assignment in new_assignments:
-                    for _, new_input in new_assignment.items():
-                        try:
-                            list(parser.parse(new_input))[0]
-                        except SyntaxError:
-                            self.fail(f"Input {new_input} not in language")
-
-                if num_inputs >= runs:
-                    break
-        else:
-            prev_solutions: OrderedSet[str] = OrderedSet()
-            for _ in range(runs):
-                s = z3.Solver()
-                s.add(z3.InRe(z3.String("var"), regex))
-                for p in prev_solutions:
-                    s.add(z3.Not(z3.String("var") == z3.StringVal(p)))
-                assert s.check() == z3.sat
-
-                solution = s.model()[z3.String("var")].as_string()
-                try:
-                    list(parser.parse(solution))[0]
-                except SyntaxError:
-                    self.fail(f"Input {solution} not in language")
-                prev_solutions.add(solution)
+            solution = s.model()[z3.String("var")].as_string()
+            try:
+                list(parser.parse(solution))[0]
+            except SyntaxError:
+                self.fail(f"Input {solution} not in language")
+            prev_solutions.add(solution)
 
         # grammar \subset regex
 
