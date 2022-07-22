@@ -134,6 +134,7 @@ setup(
     install_requires=[
         "grammargraph @ git+https://github.com/rindPHI/GrammarGraph",
         "proxyorderedset @ git+https://github.com/rindPHI/proxyorderedset",
+        "pydot >= 1.4.2",
         "wheel>=0.37.1",
         "z3-solver>=4.8.17.0"
     ],  # Optional

@@ -1,8 +1,7 @@
 import copy
-from typing import Tuple, Dict, TypeVar, Union, List, Generator, Set, Iterable
+from typing import Tuple, Dict, TypeVar, Union, Generator, Set, Iterable
 
 import pydot
-import z3
 from orderedset import OrderedSet
 
 State = TypeVar('State')
