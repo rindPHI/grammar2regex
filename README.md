@@ -44,7 +44,7 @@ This grammar can be precisely converted into a regular expression:
 from grammar_to_regex.cfg2regex import RegexConverter
 
 converter = RegexConverter(xml_id_grammar, compress_unions=True)
-print(converter.to_regex(convert_to_z3=False))
+print(converter.to_regex('<start>', convert_to_z3=False))
 ```
 
 which yields an object of type grammar_to_regex.regex.Regex, in pretty print:
