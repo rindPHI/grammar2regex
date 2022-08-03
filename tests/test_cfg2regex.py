@@ -3,6 +3,7 @@ import logging
 import string
 import unittest
 
+import pytest
 import z3
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import US_PHONE_GRAMMAR, JSON_GRAMMAR, srange, convert_ebnf_grammar
@@ -12,11 +13,7 @@ from orderedset import OrderedSet
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
 from grammar_to_regex.helpers import delete_unreachable
 from grammar_to_regex.regex import Concat, Star, Singleton, regex_to_z3, concat
-from grammar_to_regex.tests.test_helpers import TestHelpers
-
-# ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
-# sys.path.append(path.abspath('../../../StringSMTSampler'))
-# END ONLY FOR TESTING, REMOVE FOR DEPLOYMENT
+from tests.test_helpers import TestHelpers
 
 RIGHT_LINEAR_TOY_GRAMMAR = \
     {"<start>": ["<A>"],
@@ -163,6 +160,7 @@ class TestRegexConverter(unittest.TestCase):
 
         self.check_grammar_regex_inclusion(regex, grammar)
 
+    @pytest.mark.skip
     def test_json_member_to_regex(self):
         converter = RegexConverter(JSON_GRAMMAR, max_num_expansions=20, compress_unions=True)
 
@@ -202,6 +200,7 @@ class TestRegexConverter(unittest.TestCase):
         self.check_grammar_regex_inclusion(id_regex, grammar, allowed_failure_percentage=5, strict=False)
 
 
+    @pytest.mark.skip
     def test_json_object_to_regex(self):
         logging.basicConfig(level=logging.DEBUG)
         converter = RegexConverter(JSON_GRAMMAR, max_num_expansions=20)

@@ -1,6 +1,6 @@
 fuzzingbook>=1.1
-grammargraph @ git+https://github.com/rindPHI/GrammarGraph
-proxyorderedset @ git+https://github.com/rindPHI/proxyorderedset
+grammar_graph>=0.1.0
+proxyorderedset>=0.3.0
 pydot>=1.4.2
 pytest-cov>=3.0.0
 pytest-forked>=1.3.0
