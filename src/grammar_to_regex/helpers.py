@@ -150,14 +150,12 @@ def typed_canonical_to_grammar(typed_canonical_grammar: TypedCanonicalGrammar) -
 def expand_nonterminals(grammar: Grammar,
                         start_symbol: str,
                         max_expansions: int,
-                        allowed_nonterminals_str: Set[str],
                         prune: int = 5000) -> List[List[GrammarElem]]:
     result: List[List[GrammarElem]] = []
 
     cache: Dict[str, GrammarElem] = {start_symbol: Nonterminal(start_symbol)}
 
     to_expand: List[List[GrammarElem]] = [[cache[start_symbol]]]
-    allowed_nonterminals = {str2grammar_elem(str_nonterminal, cache) for str_nonterminal in allowed_nonterminals_str}
     canonical_grammar = grammar_to_typed_canonical(grammar, cache)
 
     for _ in range(max_expansions):
@@ -166,8 +164,7 @@ def expand_nonterminals(grammar: Grammar,
             to_eliminate: List[Nonterminal] = []
             for elem in term:
                 if type(elem) is Nonterminal and \
-                        not any(elem is x for x in to_eliminate) and \
-                        not any(elem is x for x in allowed_nonterminals):
+                        not any(elem is x for x in to_eliminate):
                     to_eliminate.append(typing.cast(Nonterminal, elem))
 
             if not to_eliminate and term not in result:
@@ -193,8 +190,7 @@ def expand_nonterminals(grammar: Grammar,
 
     return [expansion for expansion in result
             if not any([elem for elem in expansion
-                        if type(elem) is Nonterminal and
-                        elem not in allowed_nonterminals])]
+                        if type(elem) is Nonterminal])]
 
 
 RE_NONTERMINAL = re.compile(r'(<[^<> ]*>)')

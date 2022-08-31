@@ -65,8 +65,10 @@ class RegexConverter:
         problematic_expansions: OrderedSet[Tuple[NonterminalType, int, int]] = self.nonregular_expansions(node)
 
         if problematic_expansions:
-            self.logger.info(f"Grammar found to be non-regular, unwinding {len(problematic_expansions)} expansion "
-                             f"elements to depth {self.max_num_expansions}")
+            self.logger.info(
+                "Grammar found to be non-regular, unwinding %d expansion elements to depth %d",
+                len(problematic_expansions),
+                self.max_num_expansions)
             unwound_grammar = self.unwind_grammar(problematic_expansions)
             self.grammar = unwound_grammar
             self.grammar_graph = GrammarGraph.from_grammar(unwound_grammar)
@@ -255,10 +257,11 @@ class RegexConverter:
                                 self.nfa_cache[child.symbol] = sub_nfa
 
                             sub_nfa = sub_nfa.substitute_states({
-                                state: nfa.next_free_state(self.state_gen)
-                                for state in sub_nfa.states
-                                if state in nfa.states and state != sub_nfa.final_state
-                            } | {sub_nfa.final_state: next_state})
+                                                                    state: nfa.next_free_state(self.state_gen)
+                                                                    for state in sub_nfa.states
+                                                                    if
+                                                                    state in nfa.states and state != sub_nfa.final_state
+                                                                } | {sub_nfa.final_state: next_state})
 
                             for state in sub_nfa.states:
                                 if state not in nfa.states:
@@ -319,8 +322,7 @@ class RegexConverter:
 
         return union(*union_nodes)
 
-    def unwind_grammar(self,
-                       problematic_expansions_str: OrderedSet[Tuple[NonterminalType, int, int]]) -> Grammar:
+    def unwind_grammar(self, problematic_expansions_str: OrderedSet[Tuple[NonterminalType, int, int]]) -> Grammar:
         """Unwinds the given problematic expansions up to self.max_num_expansions times. In the result, only
         terminal symbols or nonterminals that are root of a tree in the grammar graph are allowed."""
 
@@ -331,11 +333,6 @@ class RegexConverter:
             OrderedSet([(str2grammar_elem(nonterminal_str), idx_1, idx_2)
                         for nonterminal_str, idx_1, idx_2 in problematic_expansions_str])
 
-        allowed_symbols = {str(nonterminal) for nonterminal in self.grammar.keys() if
-                           # self.grammar_graph.subgraph(nonterminal).is_tree()
-                           self.is_regular(str(nonterminal))
-                           }
-
         while problematic_expansions:
             nonterminal: Nonterminal
             expansion_idx: int
@@ -345,9 +342,6 @@ class RegexConverter:
             expansion = canonical_grammar[nonterminal][expansion_idx]
             nonterminal_to_expand: Nonterminal = cast(Nonterminal, expansion[nonterminal_idx])
             assert isinstance(nonterminal_to_expand, Nonterminal)
-            assert str(nonterminal_to_expand) not in allowed_symbols, f"Symbol {nonterminal_to_expand} is " \
-                                                                      f"an allowed symbol and shouldn't be " \
-                                                                      f"expanded!"
 
             self.logger.info(f"Unwinding nonterminal {nonterminal_idx + 1} ({nonterminal_to_expand}) in "
                              f"{expansion_idx + 1}. expansion rule of {nonterminal}")
@@ -357,10 +351,7 @@ class RegexConverter:
                 expansions = replacements[nonterminal_to_expand]
             else:
                 self.logger.debug(f"Expanding nonterminal {nonterminal_to_expand}")
-                expansions = expand_nonterminals(self.grammar,
-                                                 str(nonterminal_to_expand),
-                                                 self.max_num_expansions,
-                                                 allowed_symbols)
+                expansions = expand_nonterminals(self.grammar, str(nonterminal_to_expand), self.max_num_expansions)
                 assert expansions
                 replacements[nonterminal_to_expand] = expansions
 
@@ -371,9 +362,10 @@ class RegexConverter:
                 if to_add not in new_expansions:
                     new_expansions.append(to_add)
 
-            canonical_grammar[nonterminal] = (canonical_grammar[nonterminal][:expansion_idx] +
-                                              new_expansions +
-                                              canonical_grammar[nonterminal][expansion_idx + 1:])
+            canonical_grammar[nonterminal] = (
+                    canonical_grammar[nonterminal][:expansion_idx] +
+                    new_expansions +
+                    canonical_grammar[nonterminal][expansion_idx + 1:])
 
             # Update remaining problem pointers
             old_problematic_expansions = OrderedSet(problematic_expansions)
@@ -404,9 +396,6 @@ class RegexConverter:
                     assert type(new_problemantic_element) is Nonterminal, \
                         f"Symbol {new_problemantic_element} is " \
                         f"a terminal symbol and can thus not be problematic."
-                    assert str(new_problemantic_element) not in allowed_symbols, \
-                        f"Symbol {new_problemantic_element} is an " \
-                        f"allowed nonterminal and can thus not be problematic."
 
                     problematic_expansions.add((nonterminal, new_expansion_index, new_nonterminal_index))
 

@@ -36,7 +36,7 @@ class TestHelpers(unittest.TestCase):
             "<C>": ["c"]
         }
 
-        expansions = expand_nonterminals(grammar, "<B>", 10, {"<C>"})
+        expansions = expand_nonterminals(grammar, "<B>", 10)
         new_grammar = copy.deepcopy(grammar)
 
         for key, key_expansions in grammar.items():
@@ -53,7 +53,7 @@ class TestHelpers(unittest.TestCase):
             new_grammar[key] = new_expansions
 
         delete_unreachable(new_grammar)
-        self.assert_grammar_inclusion(new_grammar, grammar)
+        self.assert_grammar_inclusion(new_grammar, grammar, allowed_failure_percentage=6)
 
     def test_grammar_type_conversion(self):
         self.assertEqual(JSON_GRAMMAR, typed_canonical_to_grammar(grammar_to_typed_canonical(JSON_GRAMMAR)))
@@ -61,13 +61,7 @@ class TestHelpers(unittest.TestCase):
     def test_expand_json_nonterminal(self):
         logging.basicConfig(level=logging.DEBUG)
 
-        expansions = expand_nonterminals(
-            JSON_GRAMMAR,
-            "<symbol-1>",
-            20,
-            {'<digits>', '<character>', '<sign>', '<string>', '<int>', '<ws>', '<digit-1>', '<characters>',
-             '<character-1>', '<exp>', '<frac>', '<number>', '<digit>', '<onenine>'}
-        )
+        expansions = expand_nonterminals(JSON_GRAMMAR, "<symbol-1>", 20)
 
         new_grammar = copy.deepcopy(JSON_GRAMMAR)
 

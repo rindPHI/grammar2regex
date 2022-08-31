@@ -1,7 +1,9 @@
 import copy
+import json
 import logging
 import string
 import unittest
+from typing import Tuple
 
 import pytest
 import z3
@@ -11,8 +13,9 @@ from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
-from grammar_to_regex.helpers import delete_unreachable
+from grammar_to_regex.helpers import delete_unreachable, unreachable_nonterminals
 from grammar_to_regex.regex import Concat, Star, Singleton, regex_to_z3, concat
+from grammar_to_regex.type_defs import NonterminalType
 from tests.test_helpers import TestHelpers
 
 RIGHT_LINEAR_TOY_GRAMMAR = \
@@ -136,6 +139,7 @@ class TestRegexConverter(unittest.TestCase):
 
         checker = RegexConverter(grammar)
         regex = regex_to_z3(checker.right_linear_grammar_to_regex("<A>"))
+        self.logger.info(regex)
 
         self.check_grammar_regex_inclusion(regex, grammar)
 
@@ -170,7 +174,6 @@ class TestRegexConverter(unittest.TestCase):
             regex_to_z3(regex), JSON_GRAMMAR, allowed_failure_percentage=5, strict=False,
             runs=10)
 
-
     # @pytest.mark.skip(reason="Fails currently in NFA conversion, needs to be fixed.")
     def test_csv_grammar_conversion(self):
         logging.basicConfig(level=logging.DEBUG)
@@ -198,7 +201,6 @@ class TestRegexConverter(unittest.TestCase):
         id_regex = converter.to_regex("<id>")
 
         self.check_grammar_regex_inclusion(id_regex, grammar, allowed_failure_percentage=5, strict=False)
-
 
     @pytest.mark.skip
     def test_json_object_to_regex(self):
@@ -258,6 +260,39 @@ class TestRegexConverter(unittest.TestCase):
                 Singleton('a')))
         self.assertEqual(expected_id_with_prefix_regex, computed_id_with_prefix_regex)
 
+    def test_unwind_mutually_recursive_grammar(self):
+        grammar = {
+            '<start>': ['<A>'],
+            '<A>': [
+                '',
+                '<A><B>'
+            ],
+            '<B>': [
+                '<As>',
+                '<A>'
+            ],
+            '<As>': ['a', 'a<As>'],
+        }
+
+        checker = RegexConverter(grammar, max_num_expansions=3)
+
+        problematic_expansions = checker.nonregular_expansions('<start>')
+        self.logger.info('Problematic expansions:\n%s', problematic_expansions)
+
+        unwound_grammar = checker.unwind_grammar(problematic_expansions)
+        unwound_checker = RegexConverter(unwound_grammar)
+
+        self.assertFalse(unwound_checker.nonregular_expansions('<start>'))
+        self.assertTrue(unwound_checker.is_regular('<start>'))
+
+    def test_unwind_grammar(self):
+        grammar = {'<start>': ['<A>'], '<A>': ['', '<A><As>', '<A>'], '<As>': ['a', 'a<As>']}
+        checker = RegexConverter(grammar, max_num_expansions=3)
+        problematic_expansions = checker.nonregular_expansions('<start>')
+        self.assertEqual({('<As>', 1, 1)}, problematic_expansions)
+        self.assertEqual(
+            {'<start>': ['<A>'], '<A>': ['', '<A><As>', '<A>'], '<As>': ['a', 'aa', 'aaa']},
+            checker.unwind_grammar(problematic_expansions))
 
     def check_grammar_regex_inclusion(
             self,
