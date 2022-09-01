@@ -1,5 +1,5 @@
 fuzzingbook>=1.1
-grammar_graph>=0.1.0
+grammar_graph>=0.1.14
 proxyorderedset>=0.3.0
 pydot>=1.4.2
 pytest-cov>=3.0.0

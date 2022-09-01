@@ -3,7 +3,6 @@ import json
 import logging
 import string
 import unittest
-from typing import Tuple
 
 import pytest
 import z3
@@ -13,9 +12,9 @@ from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
 
 from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
-from grammar_to_regex.helpers import delete_unreachable, unreachable_nonterminals
+from grammar_to_regex.helpers import delete_unreachable
 from grammar_to_regex.regex import Concat, Star, Singleton, regex_to_z3, concat
-from grammar_to_regex.type_defs import NonterminalType
+from grep_grammar import REDUCED_GREP_GRAMMAR, GREP_GRAMMAR
 from tests.test_helpers import TestHelpers
 
 RIGHT_LINEAR_TOY_GRAMMAR = \
@@ -82,12 +81,25 @@ class TestRegexConverter(unittest.TestCase):
         self.assertEqual(checker.grammar_type, GrammarType.RIGHT_LINEAR)
 
     def test_json_grammar_nonregular_expansions(self):
+        # TODO: Validate this example manually!
+
         checker = RegexConverter(JSON_GRAMMAR)
+        expansions = checker.nonregular_expansions("<elements>")
+        self.logger.info(checker.grammar_type)
         self.assertEqual(
-            {('<elements>', 0, 1), ('<array>', 1, 1), ('<object>', 1, 1),
-             ('<symbol-1-1>', 1, 1), ('<element>', 0, 1),
-             ('<symbol-2>', 1, 1), ('<members>', 0, 1)},
-            checker.nonregular_expansions("<elements>"))
+            {('<array>', 1, 1),
+             ('<character-1>', 1, 1),
+             ('<digit-1>', 1, 1),
+             ('<element>', 0, 1),
+             ('<elements>', 0, 1),
+             ('<member>', 0, 4),
+             ('<members>', 0, 1),
+             ('<object>', 1, 1),
+             ('<symbol-1-1>', 1, 1),
+             ('<symbol-1>', 0, 1),
+             ('<symbol-2>', 1, 1),
+             ('<symbol>', 0, 1)},
+            set(expansions))
 
     def test_us_phone_grammar_to_regex_from_tree(self):
         checker = RegexConverter(US_PHONE_GRAMMAR)
@@ -278,6 +290,25 @@ class TestRegexConverter(unittest.TestCase):
 
         problematic_expansions = checker.nonregular_expansions('<start>')
         self.logger.info('Problematic expansions:\n%s', problematic_expansions)
+
+        unwound_grammar = checker.unwind_grammar(problematic_expansions)
+        unwound_checker = RegexConverter(unwound_grammar)
+
+        self.assertFalse(unwound_checker.nonregular_expansions('<start>'))
+        self.assertTrue(unwound_checker.is_regular('<start>'))
+
+    def test_unwind_grep_grammar(self):
+        pattern_grammar = copy.deepcopy(GREP_GRAMMAR)
+        pattern_grammar['<start>'] = ['<pattern>']
+        delete_unreachable(pattern_grammar)
+
+        checker = RegexConverter(pattern_grammar, max_num_expansions=3)
+
+        problematic_expansions = checker.nonregular_expansions('<start>')
+        self.assertEqual(GrammarType.RIGHT_LINEAR, checker.grammar_type)
+        self.assertEqual(
+            {('<expression>', 3, 0), ('<expression>', 4, 0), ('<expression>', 5, 1), ('<regex>', 1, 0)},
+            problematic_expansions)
 
         unwound_grammar = checker.unwind_grammar(problematic_expansions)
         unwound_checker = RegexConverter(unwound_grammar)

@@ -434,10 +434,11 @@ class RegexConverter:
 
         return result
 
-    def nonregular_expansions(self,
-                              nonterminal: str | NonterminalNode,
-                              call_seq: Tuple = (),
-                              problems: Optional[OrderedSet[Tuple[NonterminalType, int, int]]] = None) -> \
+    def nonregular_expansions(
+            self,
+            nonterminal: str | NonterminalNode,
+            call_seq: Tuple = (),
+            problems: Optional[OrderedSet[Tuple[NonterminalType, int, int]]] = None) -> \
             OrderedSet[Tuple[NonterminalType, int, int]]:
         """
         Returns pointers to expansions in a grammar which make the grammar non-regular. Those can then
@@ -457,7 +458,7 @@ class RegexConverter:
         if problems is None:
             problems = OrderedSet([])
 
-        if type(nonterminal) is str:
+        if isinstance(nonterminal, str):
             nonterminal = self.grammar_graph.get_node(nonterminal)
             assert nonterminal
         nonterminal: NonterminalNode
@@ -479,36 +480,47 @@ class RegexConverter:
             found_backlink = False
             backlink_position = -1
             for index, child in enumerate(choice_node.children):
-                if type(child) is TerminalNode:
+                if isinstance(child, TerminalNode):
                     continue
 
                 child: NonterminalNode
-                # if (self.grammar_graph.subgraph(child).is_tree() or
-                #         (not self.grammar_graph.reachable(child, nonterminal) and
-                #          self.nonregular_expansions(child, call_seq + (nonterminal,), problems))):
                 if (self.grammar_graph.subgraph(child).is_tree() or
                         not self.grammar_graph.reachable(child, nonterminal)):
                     continue
 
-                if found_backlink:
-                    problems.add((nonterminal.symbol, choice_node_index, index))
+                # if found_backlink:
+                #     problems.add((nonterminal.symbol, choice_node_index, index))
+
+                if len(choice_node.children) > 1:
+                    if index == 0:
+                        if self.grammar_type == GrammarType.RIGHT_LINEAR:
+                            problems.add((nonterminal.symbol, choice_node_index, index))
+                        else:
+                            self.grammar_type = GrammarType.LEFT_LINEAR
+                    elif index == len(choice_node.children) - 1:
+                        if self.grammar_type == GrammarType.LEFT_LINEAR:
+                            problems.add((nonterminal.symbol, choice_node_index, index))
+                        else:
+                            self.grammar_type = GrammarType.RIGHT_LINEAR
+                    else:
+                        problems.add((nonterminal.symbol, choice_node_index, index))
 
                 found_backlink = True
                 backlink_position = index
 
             assert not found_backlink or backlink_position >= 0
 
-            if found_backlink and len(choice_node.children) > 1:
-                if backlink_position == 0:
-                    if self.grammar_type == GrammarType.RIGHT_LINEAR:
-                        problems.add((nonterminal.symbol, choice_node_index, backlink_position))
-                    self.grammar_type = GrammarType.LEFT_LINEAR
-                elif backlink_position == len(choice_node.children) - 1:
-                    if self.grammar_type == GrammarType.LEFT_LINEAR:
-                        problems.add((nonterminal.symbol, choice_node_index, backlink_position))
-                    self.grammar_type = GrammarType.RIGHT_LINEAR
-                else:
-                    problems.add((nonterminal.symbol, choice_node_index, backlink_position))
+            # if found_backlink and len(choice_node.children) > 1:
+            #     if backlink_position == 0:
+            #         if self.grammar_type == GrammarType.RIGHT_LINEAR:
+            #             problems.add((nonterminal.symbol, choice_node_index, backlink_position))
+            #         self.grammar_type = GrammarType.LEFT_LINEAR
+            #     elif backlink_position == len(choice_node.children) - 1:
+            #         if self.grammar_type == GrammarType.LEFT_LINEAR:
+            #             problems.add((nonterminal.symbol, choice_node_index, backlink_position))
+            #         self.grammar_type = GrammarType.RIGHT_LINEAR
+            #     else:
+            #         problems.add((nonterminal.symbol, choice_node_index, backlink_position))
 
         all_nontree_children_nonterminals = OrderedSet([])
         for choice_node in nonterminal.children:
@@ -516,10 +528,12 @@ class RegexConverter:
                 if type(child) is NonterminalNode and not self.grammar_graph.subgraph(child).is_tree():
                     all_nontree_children_nonterminals.add(child)
 
-        result = OrderedSet()
+        children_results = [
+            self.nonregular_expansions(child, call_seq + (nonterminal,), problems)
+            for child in all_nontree_children_nonterminals]
 
-        for child_result in [self.nonregular_expansions(child, call_seq + (nonterminal,), problems)
-                             for child in all_nontree_children_nonterminals]:
+        result = OrderedSet()
+        for child_result in children_results:
             result |= child_result
 
         return result
