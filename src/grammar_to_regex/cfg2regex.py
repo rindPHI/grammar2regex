@@ -61,11 +61,11 @@ class RegexConverter:
         self.grammar = self.grammar_graph.to_grammar()
 
         node = self.str_to_nonterminal_node(node_symbol)
-        self.logger.info("Computing nonregular expansions.")
+        self.logger.debug("Computing nonregular expansions.")
         problematic_expansions: OrderedSet[Tuple[NonterminalType, int, int]] = self.nonregular_expansions(node)
 
         if problematic_expansions:
-            self.logger.info(
+            self.logger.debug(
                 "Grammar found to be non-regular, unwinding %d expansion elements to depth %d",
                 len(problematic_expansions),
                 self.max_num_expansions)
@@ -73,9 +73,9 @@ class RegexConverter:
             self.grammar = unwound_grammar
             self.grammar_graph = GrammarGraph.from_grammar(unwound_grammar)
             # pyperclip.copy(self.grammar_graph.to_dot())
-            self.logger.info("Done unwinding.")
+            self.logger.debug("Done unwinding.")
         else:
-            self.logger.info("Grammar is regular.")
+            self.logger.debug("Grammar is regular.")
 
         if self.grammar_graph.subgraph(node).is_tree():
             result = self.tree_to_regex(node)
@@ -100,7 +100,7 @@ class RegexConverter:
         self.assert_regular(node)
         assert self.grammar_type == GrammarType.LEFT_LINEAR
 
-        self.logger.info("Reversing left-linear grammar for NFA conversion.")
+        self.logger.debug("Reversing left-linear grammar for NFA conversion.")
         old_grammar_graph = self.grammar_graph
         self.grammar_graph = GrammarGraph.from_grammar(reverse_grammar(self.grammar))
         # Grammar represented by graph is right-linear now
@@ -108,11 +108,11 @@ class RegexConverter:
         nfa = self.right_linear_grammar_to_nfa(node_symbol)
         assert nfa is not None
 
-        self.logger.info("Reversing NFA created for reversed left-linear grammar")
+        self.logger.debug("Reversing NFA created for reversed left-linear grammar")
         nfa = nfa.reverse()
 
         self.grammar_graph = old_grammar_graph
-        self.logger.info(f"Converting NFA of sub grammar for {node_symbol} to regex")
+        self.logger.debug(f"Converting NFA of sub grammar for {node_symbol} to regex")
 
         return self.nfa_to_regex(nfa)
 
@@ -124,7 +124,7 @@ class RegexConverter:
         nfa = self.right_linear_grammar_to_nfa(node)
         assert nfa is not None
 
-        self.logger.info(f"Converting NFA of sub grammar for {node.symbol} to regex")
+        self.logger.debug(f"Converting NFA of sub grammar for {node.symbol} to regex")
         return self.nfa_to_regex(nfa)
 
     def nfa_to_regex(self, nfa: Optional[NFA]) -> Regex:
@@ -212,7 +212,7 @@ class RegexConverter:
             self.nfa_cache_created_for = self.grammar
             self.nfa_cache = {}
 
-        self.logger.info(f"Converting sub grammar for nonterminal {node.symbol} to NFA")
+        self.logger.debug(f"Converting sub grammar for nonterminal {node.symbol} to NFA")
 
         nfa = NFA()
         final_state = "[final]"
@@ -343,7 +343,7 @@ class RegexConverter:
             nonterminal_to_expand: Nonterminal = cast(Nonterminal, expansion[nonterminal_idx])
             assert isinstance(nonterminal_to_expand, Nonterminal)
 
-            self.logger.info(f"Unwinding nonterminal {nonterminal_idx + 1} ({nonterminal_to_expand}) in "
+            self.logger.debug(f"Unwinding nonterminal {nonterminal_idx + 1} ({nonterminal_to_expand}) in "
                              f"{expansion_idx + 1}. expansion rule of {nonterminal}")
 
             expansions: List[List[GrammarElem]]
