@@ -1,5 +1,5 @@
-from typing import Dict, List
+from typing import Mapping, Sequence
 
 NonterminalType = str
-Grammar = Dict[NonterminalType, List[str]]
-CanonicalGrammar = Dict[str, List[List[str]]]
+Grammar = Mapping[str, Sequence[str]]
+CanonicalGrammar = Mapping[str, Sequence[Sequence[str]]]

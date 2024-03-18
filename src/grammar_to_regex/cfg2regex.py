@@ -1,19 +1,45 @@
-import copy
 import itertools
 import logging
 from enum import Enum
 from typing import Dict, List, Tuple, Generator, Optional, cast
 
 import z3
-from grammar_graph.gg import GrammarGraph, NonterminalNode, ChoiceNode, TerminalNode, Node
+from grammar_graph.gg import (
+    GrammarGraph,
+    NonterminalNode,
+    ChoiceNode,
+    TerminalNode,
+    Node,
+)
 from orderedset import OrderedSet
 
-from grammar_to_regex.helpers import reverse_grammar, expand_nonterminals, delete_unreachable, \
-    grammar_to_typed_canonical, GrammarElem, str2grammar_elem, Nonterminal, typed_canonical_to_grammar, \
-    consecutive_numbers
+from grammar_to_regex.grammar_to_regular import regularize_grammar
+from grammar_to_regex.helpers import (
+    reverse_grammar,
+    delete_unreachable,
+    grammar_to_typed_canonical,
+    GrammarElem,
+    str2grammar_elem,
+    Nonterminal,
+    typed_canonical_to_grammar,
+    consecutive_numbers,
+    grammar_to_frozen,
+    non_canonical, canonical, grammar_to_mutable,
+)
 from grammar_to_regex.nfa import NFA, Transition
-from grammar_to_regex.regex import Regex, concat, Star, Union, Singleton, regex_to_z3, union, Range, Concat, star, \
-    epsilon
+from grammar_to_regex.regex import (
+    Regex,
+    concat,
+    Star,
+    Union,
+    Singleton,
+    regex_to_z3,
+    union,
+    Range,
+    Concat,
+    star,
+    epsilon,
+)
 from grammar_to_regex.type_defs import Grammar, NonterminalType
 
 
@@ -31,7 +57,12 @@ def state_generator(base: str) -> Generator[str, None, None]:
 
 
 class RegexConverter:
-    def __init__(self, grammar: Grammar, max_num_expansions: int = 10, compress_unions: bool = False):
+    def __init__(
+        self,
+        grammar: Grammar,
+        max_num_expansions: int = 10,
+        compress_unions: bool = False,
+    ):
         """
         :param grammar: The underlying grammar.
         :param max_num_expansions: For non-regular (sub) grammars, we can unwind problematic nonterminals in
@@ -39,7 +70,7 @@ class RegexConverter:
         :param compress_unions: If True, unions of single-char regexes will be compressed to range expressions.
         """
 
-        self.grammar: Grammar = grammar
+        self.grammar: Grammar = grammar_to_frozen(grammar)
         self.max_num_expansions = max_num_expansions
         self.compress_unions = compress_unions
 
@@ -55,40 +86,39 @@ class RegexConverter:
 
         self.logger = logging.getLogger("RegexConverter")
 
-    def to_regex(self, node_symbol: str | Node, convert_to_z3=True) -> z3.ReRef | Regex:
-        old_grammar = copy.deepcopy(self.grammar)
+    def to_regex(self, node_symbol: str, convert_to_z3=True) -> z3.ReRef | Regex:
+        assert isinstance(node_symbol, str)
+
+        # Store the old grammar and grammar graph, as we will modify them.
+        old_grammar = self.grammar
+        old_grammar_graph = self.grammar_graph
+
         self.grammar_graph = self.grammar_graph.subgraph(node_symbol)
-        self.grammar = self.grammar_graph.to_grammar()
+        self.grammar = grammar_to_frozen(self.grammar_graph.to_grammar())
 
-        node = self.str_to_nonterminal_node(node_symbol)
-        self.logger.debug("Computing nonregular expansions.")
-        problematic_expansions: OrderedSet[Tuple[NonterminalType, int, int]] = self.nonregular_expansions(node)
+        regular_grammar, grammar_type = regularize_grammar(canonical(self.grammar))
 
-        if problematic_expansions:
-            self.logger.debug(
-                "Grammar found to be non-regular, unwinding %d expansion elements to depth %d",
-                len(problematic_expansions),
-                self.max_num_expansions)
-            unwound_grammar = self.unwind_grammar(problematic_expansions)
-            self.grammar = unwound_grammar
-            self.grammar_graph = GrammarGraph.from_grammar(unwound_grammar)
-            # pyperclip.copy(self.grammar_graph.to_dot())
-            self.logger.debug("Done unwinding.")
-        else:
-            self.logger.debug("Grammar is regular.")
+        self.grammar_type = (
+            GrammarType.LEFT_LINEAR
+            if grammar_type == "left-linear"
+            else GrammarType.RIGHT_LINEAR
+        )
+
+        self.grammar = non_canonical(regular_grammar)
+        # TODO: grammar_to_mutable will be obsolete in newer GrammarGraph versions
+        self.grammar_graph = GrammarGraph.from_grammar(grammar_to_mutable(self.grammar))
+        node = self.grammar_graph.get_node(node_symbol)
 
         if self.grammar_graph.subgraph(node).is_tree():
             result = self.tree_to_regex(node)
-
-        # NOTE: We have to use node_symbol below, because node is still from the old,
-        #       not unwound / nonregular grammar graph.
         elif self.grammar_type == GrammarType.LEFT_LINEAR:
             result = self.left_linear_grammar_to_regex(node_symbol)
         else:
             result = self.right_linear_grammar_to_regex(node_symbol)
 
+        # Restore the old grammar and grammar graph
         self.grammar = old_grammar
-        self.grammar_graph = GrammarGraph.from_grammar(self.grammar)
+        self.grammar_graph = old_grammar_graph
 
         if self.compress_unions:
             result = compress_unions(result)
@@ -128,18 +158,27 @@ class RegexConverter:
         return self.nfa_to_regex(nfa)
 
     def nfa_to_regex(self, nfa: Optional[NFA]) -> Regex:
-        assert not [state for state in nfa.states if not any(
-            [(s1, l, s2) for (s1, l, s2) in nfa.transitions if state in (s1, s2)]
-        )], f"Found isolated states!"
+        assert not [
+            state
+            for state in nfa.states
+            if not any(
+                [(s1, l, s2) for (s1, l, s2) in nfa.transitions if state in (s1, s2)]
+            )
+        ], f"Found isolated states!"
 
         def label_from_singleton_tr(transitions: List[Transition]) -> Optional[Regex]:
             return None if not transitions else transitions[0][1]
 
         # It's much faster if we start eliminating states with few predecessors and successors
-        intermediate_states = [state for state in nfa.states if state not in (nfa.initial_state, nfa.final_state)]
+        intermediate_states = [
+            state
+            for state in nfa.states
+            if state not in (nfa.initial_state, nfa.final_state)
+        ]
         intermediate_states = sorted(
             intermediate_states,
-            key=lambda s: len(nfa.predecessors(s)) + len(nfa.successors(s)))
+            key=lambda s: len(nfa.predecessors(s)) + len(nfa.successors(s)),
+        )
 
         while len(intermediate_states) > 0:
             s = intermediate_states[0]
@@ -149,8 +188,10 @@ class RegexConverter:
             loops = nfa.transitions_between(s, s)
             assert len(loops) <= 1
 
-            self.logger.debug(f"Eliminating state {s} ({len(predecessors)} preds / {len(successors)} succs), "
-                              f"{len(nfa.states)} states left")
+            self.logger.debug(
+                f"Eliminating state {s} ({len(predecessors)} preds / {len(successors)} succs), "
+                f"{len(nfa.states)} states left"
+            )
 
             E_s_s = label_from_singleton_tr(loops) or epsilon()
 
@@ -159,7 +200,9 @@ class RegexConverter:
                 p_q_trans = nfa.transitions_between(p, q)
                 p_s_trans = nfa.transitions_between(p, s)
                 s_q_trans = nfa.transitions_between(s, q)
-                assert len(p_q_trans) <= 1 and len(p_s_trans) <= 1 and len(s_q_trans) <= 1
+                assert (
+                    len(p_q_trans) <= 1 and len(p_s_trans) <= 1 and len(s_q_trans) <= 1
+                )
 
                 E_p_q = label_from_singleton_tr(p_q_trans)
                 E_p_s = label_from_singleton_tr(p_s_trans)
@@ -212,7 +255,9 @@ class RegexConverter:
             self.nfa_cache_created_for = self.grammar
             self.nfa_cache = {}
 
-        self.logger.debug(f"Converting sub grammar for nonterminal {node.symbol} to NFA")
+        self.logger.debug(
+            f"Converting sub grammar for nonterminal {node.symbol} to NFA"
+        )
 
         nfa = NFA()
         final_state = "[final]"
@@ -223,7 +268,10 @@ class RegexConverter:
             if nonterminal == node.symbol:
                 makeinitial = True
 
-            nfa.add_state(self.grammar_graph.get_node(nonterminal).quote_symbol(), initial=makeinitial)
+            nfa.add_state(
+                self.grammar_graph.get_node(nonterminal).quote_symbol(),
+                initial=makeinitial,
+            )
 
         visited = [node]
         queue = [node]
@@ -244,11 +292,15 @@ class RegexConverter:
                     nfa.add_state(next_state)
 
                     if isinstance(child, TerminalNode):
-                        nfa.add_transition(current_state, Singleton(child.symbol), next_state)
+                        nfa.add_transition(
+                            current_state, Singleton(child.symbol), next_state
+                        )
                     else:
                         assert isinstance(child, NonterminalNode)
                         if self.grammar_graph.subgraph(child).is_tree():
-                            nfa.add_transition(current_state, self.tree_to_regex(child), next_state)
+                            nfa.add_transition(
+                                current_state, self.tree_to_regex(child), next_state
+                            )
                         else:
                             if child in self.nfa_cache:
                                 sub_nfa = self.nfa_cache[child.symbol]
@@ -256,12 +308,15 @@ class RegexConverter:
                                 sub_nfa = self.right_linear_grammar_to_nfa(child)
                                 self.nfa_cache[child.symbol] = sub_nfa
 
-                            sub_nfa = sub_nfa.substitute_states({
-                                                                    state: nfa.next_free_state(self.state_gen)
-                                                                    for state in sub_nfa.states
-                                                                    if
-                                                                    state in nfa.states and state != sub_nfa.final_state
-                                                                } | {sub_nfa.final_state: next_state})
+                            sub_nfa = sub_nfa.substitute_states(
+                                {
+                                    state: nfa.next_free_state(self.state_gen)
+                                    for state in sub_nfa.states
+                                    if state in nfa.states
+                                    and state != sub_nfa.final_state
+                                }
+                                | {sub_nfa.final_state: next_state}
+                            )
 
                             for state in sub_nfa.states:
                                 if state not in nfa.states:
@@ -269,17 +324,27 @@ class RegexConverter:
 
                             nfa.add_transitions(sub_nfa.transitions)
 
-                            if (current_state, epsilon(), sub_nfa.initial_state) not in nfa.transitions:
-                                nfa.add_transition(current_state, epsilon(), sub_nfa.initial_state)
+                            if (
+                                current_state,
+                                epsilon(),
+                                sub_nfa.initial_state,
+                            ) not in nfa.transitions:
+                                nfa.add_transition(
+                                    current_state, epsilon(), sub_nfa.initial_state
+                                )
 
                     current_state = next_state
 
                 child = children[-1]
 
                 if type(child) is TerminalNode:
-                    nfa.add_transition(current_state, Singleton(child.symbol), final_state)
+                    nfa.add_transition(
+                        current_state, Singleton(child.symbol), final_state
+                    )
                 else:
-                    nfa.add_transition(current_state, epsilon(), child.quote_symbol(), safe=False)
+                    nfa.add_transition(
+                        current_state, epsilon(), child.quote_symbol(), safe=False
+                    )
                     if child not in visited:
                         visited.append(child)
                         queue.append(child)
@@ -315,23 +380,32 @@ class RegexConverter:
 
         union_nodes: List[Regex] = []
         for choice_node in node.children:
-            children_regexes = [self.tree_to_regex(child) for child in choice_node.children]
+            children_regexes = [
+                self.tree_to_regex(child) for child in choice_node.children
+            ]
             child_result = concat(*children_regexes)
 
             union_nodes.append(child_result)
 
         return union(*union_nodes)
 
-    def unwind_grammar(self, problematic_expansions_str: OrderedSet[Tuple[NonterminalType, int, int]]) -> Grammar:
+    def unwind_grammar(
+        self, problematic_expansions_str: OrderedSet[Tuple[NonterminalType, int, int]]
+    ) -> Grammar:
         """Unwinds the given problematic expansions up to self.max_num_expansions times. In the result, only
-        terminal symbols or nonterminals that are root of a tree in the grammar graph are allowed."""
+        terminal symbols or nonterminals that are root of a tree in the grammar graph are allowed.
+        """
 
-        canonical_grammar: Dict[GrammarElem, List[List[GrammarElem]]] = \
+        canonical_grammar: Dict[GrammarElem, List[List[GrammarElem]]] = (
             grammar_to_typed_canonical(self.grammar)
+        )
         replacements: Dict[GrammarElem, List[List[GrammarElem]]] = dict([])
-        problematic_expansions: OrderedSet[Tuple[GrammarElem, int, int]] = \
-            OrderedSet([(str2grammar_elem(nonterminal_str), idx_1, idx_2)
-                        for nonterminal_str, idx_1, idx_2 in problematic_expansions_str])
+        problematic_expansions: OrderedSet[Tuple[GrammarElem, int, int]] = OrderedSet(
+            [
+                (str2grammar_elem(nonterminal_str), idx_1, idx_2)
+                for nonterminal_str, idx_1, idx_2 in problematic_expansions_str
+            ]
+        )
 
         while problematic_expansions:
             nonterminal: Nonterminal
@@ -340,64 +414,100 @@ class RegexConverter:
             nonterminal, expansion_idx, nonterminal_idx = problematic_expansions.pop()
 
             expansion = canonical_grammar[nonterminal][expansion_idx]
-            nonterminal_to_expand: Nonterminal = cast(Nonterminal, expansion[nonterminal_idx])
+            nonterminal_to_expand: Nonterminal = cast(
+                Nonterminal, expansion[nonterminal_idx]
+            )
             assert isinstance(nonterminal_to_expand, Nonterminal)
 
-            self.logger.debug(f"Unwinding nonterminal {nonterminal_idx + 1} ({nonterminal_to_expand}) in "
-                             f"{expansion_idx + 1}. expansion rule of {nonterminal}")
+            self.logger.debug(
+                f"Unwinding nonterminal {nonterminal_idx + 1} ({nonterminal_to_expand}) in "
+                f"{expansion_idx + 1}. expansion rule of {nonterminal}"
+            )
 
             expansions: List[List[GrammarElem]]
             if nonterminal_to_expand in replacements:
                 expansions = replacements[nonterminal_to_expand]
             else:
                 self.logger.debug(f"Expanding nonterminal {nonterminal_to_expand}")
-                expansions = expand_nonterminals(self.grammar, str(nonterminal_to_expand), self.max_num_expansions)
-                assert expansions
+                expansions = expand_nonterminals(
+                    self.grammar, str(nonterminal_to_expand), self.max_num_expansions
+                )
+                assert expansions, (
+                    "I couldn't find expansions for the nonterminal symbol "
+                    + f"{nonterminal_to_expand} with {self.max_num_expansions} "
+                    + "maximum expansions. Consider increasing the maximum "
+                    + "number of expansions."
+                )
                 replacements[nonterminal_to_expand] = expansions
 
             new_expansions: List[List[GrammarElem]] = list([])
 
             for idx, new_expansion in enumerate(expansions):
-                to_add = expansion[:nonterminal_idx] + new_expansion + expansion[nonterminal_idx + 1:]
+                to_add = (
+                    expansion[:nonterminal_idx]
+                    + new_expansion
+                    + expansion[nonterminal_idx + 1 :]
+                )
                 if to_add not in new_expansions:
                     new_expansions.append(to_add)
 
             canonical_grammar[nonterminal] = (
-                    canonical_grammar[nonterminal][:expansion_idx] +
-                    new_expansions +
-                    canonical_grammar[nonterminal][expansion_idx + 1:])
+                canonical_grammar[nonterminal][:expansion_idx]
+                + new_expansions
+                + canonical_grammar[nonterminal][expansion_idx + 1 :]
+            )
 
             # Update remaining problem pointers
             old_problematic_expansions = OrderedSet(problematic_expansions)
             for idx, new_expansion in enumerate(expansions):
                 for other_expansion_index, other_nonterminal_index in [
                     (other_expansion_index, other_nonterminal_index)
-                    for (other_nonterminal, other_expansion_index, other_nonterminal_index)
-                    in old_problematic_expansions
+                    for (
+                        other_nonterminal,
+                        other_expansion_index,
+                        other_nonterminal_index,
+                    ) in old_problematic_expansions
                     if nonterminal == other_nonterminal
                     if other_expansion_index >= expansion_idx
                 ]:
-                    if (nonterminal, other_expansion_index, other_nonterminal_index) in problematic_expansions:
-                        problematic_expansions.remove((nonterminal, other_expansion_index, other_nonterminal_index))
+                    if (
+                        nonterminal,
+                        other_expansion_index,
+                        other_nonterminal_index,
+                    ) in problematic_expansions:
+                        problematic_expansions.remove(
+                            (
+                                nonterminal,
+                                other_expansion_index,
+                                other_nonterminal_index,
+                            )
+                        )
 
                     new_expansion_index = other_expansion_index + idx
                     assert new_expansion_index < len(canonical_grammar[nonterminal])
 
                     if other_nonterminal_index >= nonterminal_idx:
-                        new_nonterminal_index = other_nonterminal_index + len(new_expansion) - 1
+                        new_nonterminal_index = (
+                            other_nonterminal_index + len(new_expansion) - 1
+                        )
                     else:
                         new_nonterminal_index = other_nonterminal_index
 
-                    assert new_nonterminal_index < len(canonical_grammar[nonterminal][new_expansion_index]), \
-                        "Invalid nonterminal index produced."
+                    assert new_nonterminal_index < len(
+                        canonical_grammar[nonterminal][new_expansion_index]
+                    ), "Invalid nonterminal index produced."
 
-                    new_problemantic_element = \
-                        canonical_grammar[nonterminal][new_expansion_index][new_nonterminal_index]
-                    assert type(new_problemantic_element) is Nonterminal, \
-                        f"Symbol {new_problemantic_element} is " \
+                    new_problemantic_element = canonical_grammar[nonterminal][
+                        new_expansion_index
+                    ][new_nonterminal_index]
+                    assert type(new_problemantic_element) is Nonterminal, (
+                        f"Symbol {new_problemantic_element} is "
                         f"a terminal symbol and can thus not be problematic."
+                    )
 
-                    problematic_expansions.add((nonterminal, new_expansion_index, new_nonterminal_index))
+                    problematic_expansions.add(
+                        (nonterminal, new_expansion_index, new_nonterminal_index)
+                    )
 
         result = typed_canonical_to_grammar(canonical_grammar)
         delete_unreachable(result)
@@ -405,8 +515,10 @@ class RegexConverter:
 
     def assert_regular(self, node):
         """Asserts that the sub grammar at node is regular. Has a side effect: self.grammar_type is set!"""
-        assert self.is_regular(node), f"The sub grammar at node {node.symbol} is not regular " \
-                                      f"and cannot be converted to an NFA."
+        assert self.is_regular(node), (
+            f"The sub grammar at node {node.symbol} is not regular "
+            f"and cannot be converted to an NFA."
+        )
 
     def is_regular(self, nonterminal: str | NonterminalNode) -> bool:
         """
@@ -420,9 +532,14 @@ class RegexConverter:
                  starting in nonterminal is regular.
         """
 
-        nonterminal_str = nonterminal if type(nonterminal) is str else nonterminal.symbol
+        nonterminal_str = (
+            nonterminal if type(nonterminal) is str else nonterminal.symbol
+        )
 
-        if self.regularity_cache_created_for == self.grammar and nonterminal_str in self.regularity_cache:
+        if (
+            self.regularity_cache_created_for == self.grammar
+            and nonterminal_str in self.regularity_cache
+        ):
             return self.regularity_cache[nonterminal_str]
         elif self.regularity_cache_created_for != self.grammar:
             self.regularity_cache_created_for = self.grammar
@@ -435,11 +552,11 @@ class RegexConverter:
         return result
 
     def nonregular_expansions(
-            self,
-            nonterminal: str | NonterminalNode,
-            call_seq: Tuple = (),
-            problems: Optional[OrderedSet[Tuple[NonterminalType, int, int]]] = None) -> \
-            OrderedSet[Tuple[NonterminalType, int, int]]:
+        self,
+        nonterminal: str | NonterminalNode,
+        call_seq: Tuple = (),
+        problems: Optional[OrderedSet[Tuple[NonterminalType, int, int]]] = None,
+    ) -> OrderedSet[Tuple[NonterminalType, int, int]]:
         """
         Returns pointers to expansions in a grammar which make the grammar non-regular. Those can then
         be unwound to convert the grammar into a regular grammar which represents a sub language.
@@ -484,8 +601,9 @@ class RegexConverter:
                     continue
 
                 child: NonterminalNode
-                if (self.grammar_graph.subgraph(child).is_tree() or
-                        not self.grammar_graph.reachable(child, nonterminal)):
+                if self.grammar_graph.subgraph(
+                    child
+                ).is_tree() or not self.grammar_graph.reachable(child, nonterminal):
                     continue
 
                 # if found_backlink:
@@ -525,12 +643,16 @@ class RegexConverter:
         all_nontree_children_nonterminals = OrderedSet([])
         for choice_node in nonterminal.children:
             for child in choice_node.children:
-                if type(child) is NonterminalNode and not self.grammar_graph.subgraph(child).is_tree():
+                if (
+                    type(child) is NonterminalNode
+                    and not self.grammar_graph.subgraph(child).is_tree()
+                ):
                     all_nontree_children_nonterminals.add(child)
 
         children_results = [
             self.nonregular_expansions(child, call_seq + (nonterminal,), problems)
-            for child in all_nontree_children_nonterminals]
+            for child in all_nontree_children_nonterminals
+        ]
 
         result = OrderedSet()
         for child_result in children_results:
@@ -550,12 +672,13 @@ def compress_unions(regex: Regex) -> Regex:
     # We assume that all unions are flattened, i.e., there are no unions directly nested inside unions
     if isinstance(regex, Union):
         # Compress single-char unions to ranges
-        char_nodes = [
-            child for child in regex.children
-            if isinstance(child, Singleton)
-        ]
+        char_nodes = [child for child in regex.children if isinstance(child, Singleton)]
 
-        others = [compress_unions(child) for child in regex.children if child not in char_nodes]
+        others = [
+            compress_unions(child)
+            for child in regex.children
+            if child not in char_nodes
+        ]
 
         chars = OrderedSet([char_node.child for char_node in char_nodes])
         # NOTE: In some cases, string sequences that are longer than one char can appear in chars;
@@ -564,14 +687,19 @@ def compress_unions(regex: Regex) -> Regex:
         consecutive_char_codes = consecutive_numbers(char_codes)
 
         union_nodes = [
-            Singleton(chr(group[0])) if len(group) == 1
-            else Range(chr(group[0]), chr(group[-1]))
+            (
+                Singleton(chr(group[0]))
+                if len(group) == 1
+                else Range(chr(group[0]), chr(group[-1]))
+            )
             for group in consecutive_char_codes
         ]
         union_nodes += others
 
         # NOTE: `longer_str` can also include the empty string.
-        union_nodes.extend([Singleton(longer_str) for longer_str in chars if len(longer_str) != 1])
+        union_nodes.extend(
+            [Singleton(longer_str) for longer_str in chars if len(longer_str) != 1]
+        )
 
         return union(*union_nodes)
 

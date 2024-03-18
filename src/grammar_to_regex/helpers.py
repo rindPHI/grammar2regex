@@ -1,8 +1,19 @@
+import itertools
 import re
-import typing
+from functools import cache
 from itertools import groupby
 from operator import itemgetter, sub
-from typing import List, Set, Union, Dict
+from typing import (
+    List,
+    Set,
+    Union,
+    Dict,
+    TypeVar,
+    Iterable,
+    Callable,
+)
+
+from frozendict import frozendict
 
 from grammar_to_regex.type_defs import Grammar, CanonicalGrammar
 
@@ -26,12 +37,12 @@ def split_expansion(expansion: str) -> List[str]:
             in_nonterminal = False
             token_start = token_start_backup
         elif expansion[i] == ">" and in_nonterminal:
-            result.append(expansion[token_start:i + 1])
+            result.append(expansion[token_start : i + 1])
             in_nonterminal = False
             token_start = i + 1
             token_start_backup = token_start
         elif i == len(expansion) - 1:
-            result.append(expansion[token_start:i + 1])
+            result.append(expansion[token_start : i + 1])
 
     return [token for token in result if token]
 
@@ -39,17 +50,19 @@ def split_expansion(expansion: str) -> List[str]:
 
 
 def reverse_grammar(grammar: Grammar) -> Grammar:
-    return {key: [reverse_expansion(expansion) for expansion in expansions]
-            for key, expansions in grammar.items()}
+    return {
+        key: [reverse_expansion(expansion) for expansion in expansions]
+        for key, expansions in grammar.items()
+    }
 
 
 def reverse_expansion(expansion: str) -> str:
     return "".join(list(reversed(split_expansion(expansion))))
 
 
+@cache
 def is_nonterminal(element: str) -> bool:
-    """A little cheaper than regexes."""
-    return element.startswith("<") and element.endswith(">") and " " not in element
+    return RE_NONTERMINAL.match(element) is not None
 
 
 class GrammarElem:
@@ -87,7 +100,9 @@ class Nonterminal(GrammarElem):
         super().__init__(elem)
 
 
-def str2grammar_elem(elem: str, cache: Union[None, Dict[str, GrammarElem]] = None) -> GrammarElem:
+def str2grammar_elem(
+    elem: str, cache: Union[None, Dict[str, GrammarElem]] = None
+) -> GrammarElem:
     if cache is not None and elem in cache:
         return cache[elem]
 
@@ -103,104 +118,75 @@ def str2grammar_elem(elem: str, cache: Union[None, Dict[str, GrammarElem]] = Non
         return cache.setdefault(elem, result)
 
 
+def split_at_nonterminal_boundaries(expansion):
+    return tuple(token for token in RE_NONTERMINAL.split(expansion) if token)
+
+
 def canonical(grammar: Grammar) -> CanonicalGrammar:
     # Slightly optimized w.r.t. Fuzzing Book version: Call to split on
     # compiled regex instead of fresh compilation every time.
-    def split(expansion):
-        if isinstance(expansion, tuple):
-            expansion = expansion[0]
 
-        return [
-            token
-            for token in RE_NONTERMINAL.split(expansion)
-            if token]
+    return frozendict(
+        {
+            k: tuple(
+                split_at_nonterminal_boundaries(expression)
+                for expression in alternatives
+            )
+            for k, alternatives in grammar.items()
+        }
+    )
 
-    return {
-        k: [split(expression) for expression in alternatives]
-        for k, alternatives in grammar.items()
-    }
+
+def non_canonical(grammar: CanonicalGrammar) -> Grammar:
+    return frozendict(
+        {
+            k: tuple("".join(expansion) for expansion in alternatives)
+            for k, alternatives in grammar.items()
+        }
+    )
 
 
 TypedCanonicalGrammar = Dict[GrammarElem, List[List[GrammarElem]]]
 
 
 def grammar_to_typed_canonical(
-        ordinary_grammar: Grammar,
-        cache: Union[None, Dict[str, GrammarElem]] = None) -> TypedCanonicalGrammar:
+    ordinary_grammar: Grammar, cache: Union[None, Dict[str, GrammarElem]] = None
+) -> TypedCanonicalGrammar:
     canonical_grammar = canonical(ordinary_grammar)
     typed_canonical_grammar = {}
 
     for key, expansions in canonical_grammar.items():
-        typed_canonical_grammar[str2grammar_elem(key, cache)] = \
-            [[str2grammar_elem(elem, cache) for elem in str_expansion]
-             for str_expansion in expansions]
+        typed_canonical_grammar[str2grammar_elem(key, cache)] = [
+            [str2grammar_elem(elem, cache) for elem in str_expansion]
+            for str_expansion in expansions
+        ]
 
     return typed_canonical_grammar
 
 
-def typed_canonical_to_grammar(typed_canonical_grammar: TypedCanonicalGrammar) -> Grammar:
+def typed_canonical_to_grammar(
+    typed_canonical_grammar: TypedCanonicalGrammar,
+) -> Grammar:
     ordinary_grammar = {}
 
     for key, expansions in typed_canonical_grammar.items():
-        ordinary_grammar[str(key)] = ["".join(map(str, expansion)) for expansion in expansions]
+        ordinary_grammar[str(key)] = [
+            "".join(map(str, expansion)) for expansion in expansions
+        ]
 
     return ordinary_grammar
 
 
-def expand_nonterminals(grammar: Grammar,
-                        start_symbol: str,
-                        max_expansions: int,
-                        prune: int = 5000) -> List[List[GrammarElem]]:
-    result: List[List[GrammarElem]] = []
-
-    cache: Dict[str, GrammarElem] = {start_symbol: Nonterminal(start_symbol)}
-
-    to_expand: List[List[GrammarElem]] = [[cache[start_symbol]]]
-    canonical_grammar = grammar_to_typed_canonical(grammar, cache)
-
-    for _ in range(max_expansions):
-        new_to_expand: List[List[GrammarElem]] = []
-        for term in to_expand:
-            to_eliminate: List[Nonterminal] = []
-            for elem in term:
-                if type(elem) is Nonterminal and \
-                        not any(elem is x for x in to_eliminate):
-                    to_eliminate.append(typing.cast(Nonterminal, elem))
-
-            if not to_eliminate and term not in result:
-                result.append(term)
-                continue
-
-            nonterminal: Nonterminal
-            for nonterminal in to_eliminate:
-                expansion: List[GrammarElem]
-                for expansion in canonical_grammar[nonterminal]:
-                    new_to_expand_elem = [item for sublist in
-                                          [expansion if elem is nonterminal else [elem] for elem in term] for
-                                          item in sublist]
-                    new_to_expand.append(new_to_expand_elem)
-
-                    if len(new_to_expand) >= prune:
-                        break
-
-            if len(new_to_expand) >= prune:
-                break
-
-        to_expand = new_to_expand
-
-    return [expansion for expansion in result
-            if not any([elem for elem in expansion
-                        if type(elem) is Nonterminal])]
-
-
-RE_NONTERMINAL = re.compile(r'(<[^<> ]*>)')
+RE_NONTERMINAL = re.compile(r"(<[^<> ]*>)")
 
 
 def nonterminals(expansion: str) -> List[str]:
     return RE_NONTERMINAL.findall(expansion)
 
 
-def reachable_nonterminals(grammar: Grammar, _start_symbol: str = '<start>') -> Set[str]:
+def reachable_nonterminals(
+    grammar: Grammar, _start_symbol: str = "<start>"
+) -> Set[str]:
     reachable = set()
 
     def _find_reachable_nonterminals(grammar, symbol):
@@ -215,7 +201,7 @@ def reachable_nonterminals(grammar: Grammar, _start_symbol: str = '<start>') -> 
     return reachable
 
 
-def unreachable_nonterminals(grammar: Grammar, _start_symbol='<start>') -> Set[str]:
+def unreachable_nonterminals(grammar: Grammar, _start_symbol="<start>") -> Set[str]:
     return grammar.keys() - reachable_nonterminals(grammar, _start_symbol)
 
 
@@ -231,3 +217,76 @@ def consecutive_numbers(l: List[int]) -> List[List[int]]:
         result.append(list(map(itemgetter(1), g)))
 
     return result
+
+
+S = TypeVar("S")
+T = TypeVar("T")
+
+
+def dict_of_lists_to_list_of_dicts(
+    dict_of_lists: Dict[S, Iterable[T]]
+) -> List[Dict[S, T]]:
+    keys = list(dict_of_lists.keys())
+    list_of_values = [dict_of_lists[key] for key in keys]
+    product = list(itertools.product(*list_of_values))
+
+    return [dict(zip(keys, product_elem)) for product_elem in product]
+
+
+def grammar_to_frozen(grammar: Grammar) -> Grammar:
+    if isinstance(grammar, frozendict):
+        return grammar
+    return frozendict({k: tuple(v) for k, v in grammar.items()})
+
+
+def grammar_to_mutable(grammar: Grammar) -> Grammar:
+    if not isinstance(grammar, frozendict):
+        assert isinstance(grammar, dict)
+        return grammar
+    return {k: list(v) for k, v in grammar.items()}
+
+
+def star(f: Callable[..., T], do_flatten=False) -> Callable[..., T]:
+    """
+    Transforms a function accepting n arguments into one accepting a sequence of n
+    elements. If :code:`do_flatten` is True, the returned function accepts multiple
+    arguments. Sequences in these arguments are flattened.
+
+    Example
+    -------
+
+    Transforming a function adding two numbers to a function adding the two elements
+    of a list of numbers:
+
+    >>> star(lambda a, b: a + b)([1, 2])
+    3
+
+    Transforming a function adding four numbers to a function adding all passed numbers
+    or their elements using flattening. There must be exactly four numbers in the
+    given arguments.
+
+    >>> star(lambda a, b, c, d: a + b + c + d, do_flatten=True)(1, [2, 3], 4)
+    10
+
+    It does not matter if the passed arguments are inside a list or not:
+
+    >>> star(lambda a, b, c, d: a + b + c + d, do_flatten=True)([1], 2, [3, 4])
+    10
+
+    But we must pass exactly five numbers:
+
+    >>> star(lambda a, b, c, d: a + b + c + d, do_flatten=True)(1, [2, 3, 4], 5)
+    Traceback (most recent call last):
+    ...
+    TypeError: <lambda>() takes 4 positional arguments but 5 were given
+
+    :param f: The function to be "starred."
+    :param do_flatten: Set to True if the returned function should accept multiple
+        arguments that are flattened before forwarding them to the original function.
+    :return: The "starred" function.
+    """
+
+    if do_flatten:
+        return lambda *x: f(*flatten(x))
+    else:
+        return lambda x: f(*x)
