@@ -66,7 +66,7 @@ Grammar2Regex requires Python 3.10.
 To install Grammar2Regex, run
 
 ```shell
-pip install grammar2regex
+pip install grammar_to_regex
 ```
 
 To install it locally for testing, check this repository out and run
