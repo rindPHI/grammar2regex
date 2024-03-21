@@ -279,9 +279,17 @@ class TestRegexConverter(unittest.TestCase):
             "<digit>": ["0", "1", "2"],
         }
 
-        converter = RegexConverter(grammar, max_num_expansions=3)
-        print(converter.to_regex("<start>", convert_to_z3=False))
-        # TODO
+        converter = RegexConverter(grammar)
+        regex = converter.to_regex("<chars>", convert_to_z3=True)
+        self.check_grammar_regex_inclusion(
+            regex, delete_unreachable(grammar | {"<start>": ["<chars>"]})
+        )
+
+        # converter = RegexConverter(grammar, max_num_expansions=4, expansion_depth_direct_recursion=1)
+        # regex = converter.to_regex("<start>", convert_to_z3=True)
+        # self.check_grammar_regex_inclusion(
+        #     regex, grammar, allowed_failure_percentage=5, strict=False
+        # )
 
     def check_grammar_regex_inclusion(
         self,

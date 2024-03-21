@@ -16,6 +16,7 @@ from grammar_to_regex.helpers import (
     canonical,
     compute_closure,
     edges_in_grammar,
+    delete_unreachable,
 )
 from grammar_to_regex.helpers import (
     is_nonterminal,
@@ -76,13 +77,28 @@ class RegexConverter:
         self.expansion_depth_direct_recursion = expansion_depth_direct_recursion
         self.compress_unions = compress_unions
 
+    def __hash__(self):
+        return hash(
+            (
+                self.grammar,
+                self.max_num_expansions,
+                self.expansion_depth_direct_recursion,
+                self.compress_unions,
+            )
+        )
+
+    @cache
     def to_regex(
         self, node_symbol: str = "<start>", convert_to_z3=True
     ) -> z3.ReRef | Regex:
         assert isinstance(node_symbol, str)
 
         result = convert_grammar_to_regex(
-            self.grammar, node_symbol, do_compress_unions=self.compress_unions
+            delete_unreachable(self.grammar.set("<start>", ((node_symbol,),))),
+            "<start>",
+            do_compress_unions=self.compress_unions,
+            expansion_depth=self.max_num_expansions,
+            expansion_depth_direct_recursion=self.expansion_depth_direct_recursion,
         )
 
         return result if not convert_to_z3 else regex_to_z3(result)
@@ -94,6 +110,8 @@ def convert_grammar_to_regex(
     start_symbol: str = "<start>",
     do_compress_unions: bool = True,
     end_symbol: Optional[str] = None,
+    expansion_depth: int = 3,
+    expansion_depth_direct_recursion: int = 1,
 ) -> Regex:
     """
     TODO: Document.
@@ -116,6 +134,8 @@ def convert_grammar_to_regex(
     :param start_symbol:
     :param end_symbol:
     :param do_compress_unions:
+    :param expansion_depth:
+    :param expansion_depth_direct_recursion:
     :return:
     """
 
@@ -123,7 +143,11 @@ def convert_grammar_to_regex(
     assert start_symbol in grammar
     assert end_symbol is None or is_nonterminal(end_symbol)
 
-    regular_grammar, grammar_type = regularize_grammar(grammar)
+    regular_grammar, grammar_type = regularize_grammar(
+        grammar,
+        expansion_depth=expansion_depth,
+        expansion_depth_direct_recursion=expansion_depth_direct_recursion,
+    )
     assert grammar_type in [LEFT_LINEAR, RIGHT_LINEAR, NON_RECURSIVE]
 
     if grammar_type == LEFT_LINEAR:
