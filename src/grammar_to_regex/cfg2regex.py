@@ -76,7 +76,9 @@ class RegexConverter:
         self.expansion_depth_direct_recursion = expansion_depth_direct_recursion
         self.compress_unions = compress_unions
 
-    def to_regex(self, node_symbol: str, convert_to_z3=True) -> z3.ReRef | Regex:
+    def to_regex(
+        self, node_symbol: str = "<start>", convert_to_z3=True
+    ) -> z3.ReRef | Regex:
         assert isinstance(node_symbol, str)
 
         result = convert_grammar_to_regex(

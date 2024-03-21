@@ -5,6 +5,7 @@ import unittest
 
 import pytest
 import z3
+from frozendict import frozendict
 from fuzzingbook.GrammarCoverageFuzzer import GrammarCoverageFuzzer
 from fuzzingbook.Grammars import (
     US_PHONE_GRAMMAR,
@@ -13,13 +14,11 @@ from fuzzingbook.Grammars import (
     convert_ebnf_grammar,
 )
 from fuzzingbook.Parser import EarleyParser
-from orderedset import OrderedSet
 
 from grammar_to_regex.cfg2regex import RegexConverter, Grammar
-from grammar_to_regex.helpers import (
-    delete_unreachable,
-)
+from grammar_to_regex.helpers import delete_unreachable
 from grammar_to_regex.regex import Concat, Star, Singleton, regex_to_z3, concat
+from grammar_to_regex.type_defs import FrozenOrderedSet
 
 RIGHT_LINEAR_TOY_GRAMMAR = {
     "<start>": ["<A>"],
@@ -234,6 +233,31 @@ class TestRegexConverter(unittest.TestCase):
         )
         self.assertEqual(expected_id_with_prefix_regex, computed_id_with_prefix_regex)
 
+    def test_xml_id(self):
+        xml_id_grammar = {
+            "<start>": ["<id>"],
+            "<id>": ["<id-no-prefix>", "<id-with-prefix>"],
+            "<id-no-prefix>": [
+                "<id-start-char>",
+                "<id-start-char><id-chars>",
+            ],
+            "<id-with-prefix>": ["<id-no-prefix>:<id-no-prefix>"],
+            "<id-start-char>": srange("_" + string.ascii_letters),
+            "<id-chars>": ["<id-char>", "<id-char><id-chars>"],
+            "<id-char>": ["<id-start-char>"] + srange("-." + string.digits),
+        }
+
+        converter = RegexConverter(
+            xml_id_grammar, max_num_expansions=3, compress_unions=True
+        )
+        regex = converter.to_regex("<start>", convert_to_z3=False)
+
+        self.check_grammar_regex_inclusion(
+            regex_to_z3(regex),
+            xml_id_grammar,
+            runs=100,
+        )
+
     def test_arithmetic_expression_grammar(self):
         grammar = {
             "<start>": ["<expression>"],
@@ -257,6 +281,7 @@ class TestRegexConverter(unittest.TestCase):
 
         converter = RegexConverter(grammar, max_num_expansions=3)
         print(converter.to_regex("<start>", convert_to_z3=False))
+        # TODO
 
     def check_grammar_regex_inclusion(
         self,
@@ -274,7 +299,7 @@ class TestRegexConverter(unittest.TestCase):
         parser = EarleyParser(grammar)
 
         # regex \subset grammar
-        prev_solutions: OrderedSet[str] = OrderedSet()
+        prev_solutions: FrozenOrderedSet[str] = frozendict()
         for _ in range(runs):
             s = z3.Solver()
             s.add(z3.InRe(z3.String("var"), regex))
@@ -285,9 +310,10 @@ class TestRegexConverter(unittest.TestCase):
             solution = s.model()[z3.String("var")].as_string()
             try:
                 list(parser.parse(solution))[0]
+                self.logger.debug(f"Input {solution} is in the grammar")
             except SyntaxError:
                 self.fail(f"Input {solution} not in language")
-            prev_solutions.add(solution)
+            prev_solutions = prev_solutions.set(solution, None)
 
         # grammar \subset regex
 
