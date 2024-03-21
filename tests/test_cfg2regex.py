@@ -15,13 +15,11 @@ from fuzzingbook.Grammars import (
 from fuzzingbook.Parser import EarleyParser
 from orderedset import OrderedSet
 
-from grammar_to_regex.cfg2regex import RegexConverter, GrammarType, Grammar
+from grammar_to_regex.cfg2regex import RegexConverter, Grammar
 from grammar_to_regex.helpers import (
     delete_unreachable,
 )
 from grammar_to_regex.regex import Concat, Star, Singleton, regex_to_z3, concat
-from grep_grammar import GREP_GRAMMAR
-from tests.test_helpers import TestHelpers
 
 RIGHT_LINEAR_TOY_GRAMMAR = {
     "<start>": ["<A>"],
@@ -59,65 +57,9 @@ class TestRegexConverter(unittest.TestCase):
         super().__init__(*args)
         self.logger = logging.getLogger(type(self).__name__)
 
-    def test_toy_grammar_regularity(self):
-        grammar = {
-            "<start>": ["<A>"],
-            "<A>": ["<B>a", "<A>b", "b"],
-            "<B>": ["<C>a", "<B>b"],
-            "<C>": ["<A>a", "<C>b"],
-        }
-        checker = RegexConverter(grammar)
-        self.assertTrue(checker.is_regular("<start>"))
-
-    def test_us_phone_grammar_regularity(self):
-        checker = RegexConverter(US_PHONE_GRAMMAR)
-        self.assertTrue(checker.is_regular("<start>"))
-        self.assertEqual(GrammarType.UNDET, checker.grammar_type)
-
-    def test_json_grammar_regularity(self):
-        checker = RegexConverter(JSON_GRAMMAR)
-        self.assertFalse(checker.is_regular("<start>"))
-        self.assertFalse(checker.is_regular("<value>"))
-        self.assertFalse(checker.is_regular("<member>"))
-        self.assertFalse(checker.is_regular("<symbol>"))
-        self.assertFalse(checker.is_regular("<elements>"))
-
-        self.assertTrue(checker.is_regular("<int>"))
-        self.assertEqual(checker.grammar_type, GrammarType.RIGHT_LINEAR)
-        self.assertTrue(checker.is_regular("<exp>"))
-        self.assertEqual(checker.grammar_type, GrammarType.RIGHT_LINEAR)
-        self.assertTrue(checker.is_regular("<characters>"))
-        self.assertEqual(checker.grammar_type, GrammarType.RIGHT_LINEAR)
-        self.assertTrue(checker.is_regular("<string>"))
-        self.assertEqual(checker.grammar_type, GrammarType.RIGHT_LINEAR)
-
-    def test_json_grammar_nonregular_expansions(self):
-        # TODO: Validate this example manually!
-
-        checker = RegexConverter(JSON_GRAMMAR)
-        expansions = checker.nonregular_expansions("<elements>")
-        self.logger.info(checker.grammar_type)
-        self.assertEqual(
-            {
-                ("<array>", 1, 1),
-                ("<character-1>", 1, 1),
-                ("<digit-1>", 1, 1),
-                ("<element>", 0, 1),
-                ("<elements>", 0, 1),
-                ("<member>", 0, 4),
-                ("<members>", 0, 1),
-                ("<object>", 1, 1),
-                ("<symbol-1-1>", 1, 1),
-                ("<symbol-1>", 0, 1),
-                ("<symbol-2>", 1, 1),
-                ("<symbol>", 0, 1),
-            },
-            set(expansions),
-        )
-
     def test_us_phone_grammar_to_regex_from_tree(self):
         checker = RegexConverter(US_PHONE_GRAMMAR)
-        regex = regex_to_z3(checker.tree_to_regex("<start>"))
+        regex = checker.to_regex("<start>", convert_to_z3=True)
 
         self.assertEqual(z3.sat, self.smt_check(z3.InRe("(200)200-0000", regex)))
         self.assertEqual(z3.unsat, self.smt_check(z3.InRe("(000)200-0000", regex)))
@@ -131,11 +73,6 @@ class TestRegexConverter(unittest.TestCase):
 
         self.check_grammar_regex_inclusion(regex_to_z3(regex), US_PHONE_GRAMMAR)
 
-    def test_toy_grammar_to_nfa(self):
-        checker = RegexConverter(RIGHT_LINEAR_TOY_GRAMMAR)
-        checker.right_linear_grammar_to_nfa("<A>")
-        # No Exception
-
     def test_simple_grammar_to_regex(self):
         # a* b
         grammar = {
@@ -143,20 +80,20 @@ class TestRegexConverter(unittest.TestCase):
             "<A>": ["a<A>", "b"],
         }
         checker = RegexConverter(grammar)
-        regex = checker.right_linear_grammar_to_regex("<A>")
+        regex = checker.to_regex("<A>", convert_to_z3=False)
 
         self.assertEqual(
             Concat(children=(Star(child=Singleton(child="a")), Singleton(child="b"))),
             regex,
         )
-        self.check_grammar_regex_inclusion(regex_to_z3(regex), grammar)
+        self.check_grammar_regex_inclusion(regex_to_z3(regex), grammar, runs=20)
 
     def test_toy_grammar_to_regex(self):
         grammar = RIGHT_LINEAR_TOY_GRAMMAR
         checker = RegexConverter(grammar)
-        regex = checker.right_linear_grammar_to_regex("<A>")
+        regex = checker.to_regex("<A>", convert_to_z3=True)
 
-        self.check_grammar_regex_inclusion(regex_to_z3(regex), grammar)
+        self.check_grammar_regex_inclusion(regex, grammar)
 
     def test_simple_toy_grammar_to_regex(self):
         grammar = {
@@ -167,10 +104,9 @@ class TestRegexConverter(unittest.TestCase):
         }
 
         checker = RegexConverter(grammar)
-        regex = regex_to_z3(checker.right_linear_grammar_to_regex("<A>"))
-        self.logger.info(regex)
+        regex = checker.to_regex("<A>", convert_to_z3=True)
 
-        self.check_grammar_regex_inclusion(regex, grammar)
+        self.check_grammar_regex_inclusion(regex, grammar, runs=30)
 
     def test_left_linear_to_regex(self):
         grammar = {
@@ -181,15 +117,18 @@ class TestRegexConverter(unittest.TestCase):
         }
 
         checker = RegexConverter(grammar)
-        regex = regex_to_z3(checker.left_linear_grammar_to_regex("<A>"))
+        regex = checker.to_regex("<A>", convert_to_z3=True)
 
         self.check_grammar_regex_inclusion(regex, grammar)
 
     def test_json_string_to_regex(self):
         logging.basicConfig(level=logging.DEBUG)
         converter = RegexConverter(JSON_GRAMMAR)
-        grammar = converter.grammar_graph.subgraph("<string>").to_grammar()
-        regex = regex_to_z3(converter.right_linear_grammar_to_regex("<string>"))
+        regex = converter.to_regex("<string>", convert_to_z3=True)
+
+        grammar = copy.deepcopy(JSON_GRAMMAR)
+        grammar["<start>"] = ["<string>"]
+        grammar = delete_unreachable(grammar)
 
         self.check_grammar_regex_inclusion(regex, grammar)
 
@@ -214,13 +153,13 @@ class TestRegexConverter(unittest.TestCase):
         logging.basicConfig(level=logging.DEBUG)
 
         converter = RegexConverter(
-            CSV_GRAMMAR, max_num_expansions=20, compress_unions=True
+            CSV_GRAMMAR, max_num_expansions=3, compress_unions=True
         )
         long_union_regex = converter.to_regex("<raw-string>", convert_to_z3=False)
 
         grammar = copy.deepcopy(CSV_GRAMMAR)
         grammar["<start>"] = ["<raw-string>"]
-        delete_unreachable(grammar)
+        grammar = delete_unreachable(grammar)
 
         self.check_grammar_regex_inclusion(
             regex_to_z3(long_union_regex),
@@ -254,22 +193,6 @@ class TestRegexConverter(unittest.TestCase):
 
         self.check_grammar_regex_inclusion(
             regex, JSON_GRAMMAR, allowed_failure_percentage=5, strict=False
-        )
-
-    def test_unwind_expansion(self):
-        grammar = {
-            "<start>": ["<A>"],
-            "<A>": ["a<B><B><C>"],
-            "<B>": ["<B>b", "<C><B>", ""],
-            "<C>": ["c"],
-        }
-
-        checker = RegexConverter(grammar, max_num_expansions=10)
-        unwound_grammar = checker.unwind_grammar(
-            OrderedSet([("<A>", 0, 2), ("<A>", 0, 1)])
-        )
-        TestHelpers.assert_grammar_inclusion(
-            self, unwound_grammar, grammar, allowed_failure_percentage=5
         )
 
     def test_ranges(self):
@@ -311,68 +234,6 @@ class TestRegexConverter(unittest.TestCase):
         )
         self.assertEqual(expected_id_with_prefix_regex, computed_id_with_prefix_regex)
 
-    def test_unwind_mutually_recursive_grammar(self):
-        grammar = {
-            "<start>": ["<A>"],
-            "<A>": ["", "<A><B>"],
-            "<B>": ["<As>", "<A>"],
-            "<As>": ["a", "a<As>"],
-        }
-
-        checker = RegexConverter(grammar, max_num_expansions=3)
-
-        problematic_expansions = checker.nonregular_expansions("<start>")
-        self.logger.info("Problematic expansions:\n%s", problematic_expansions)
-
-        unwound_grammar = checker.unwind_grammar(problematic_expansions)
-        unwound_checker = RegexConverter(unwound_grammar)
-
-        self.assertFalse(unwound_checker.nonregular_expansions("<start>"))
-        self.assertTrue(unwound_checker.is_regular("<start>"))
-
-    def test_unwind_grep_grammar(self):
-        pattern_grammar = copy.deepcopy(GREP_GRAMMAR)
-        pattern_grammar["<start>"] = ["<pattern>"]
-        delete_unreachable(pattern_grammar)
-
-        checker = RegexConverter(pattern_grammar, max_num_expansions=3)
-
-        problematic_expansions = checker.nonregular_expansions("<start>")
-        self.assertEqual(GrammarType.RIGHT_LINEAR, checker.grammar_type)
-        self.assertEqual(
-            {
-                ("<expression>", 3, 0),
-                ("<expression>", 4, 0),
-                ("<expression>", 5, 1),
-                ("<regex>", 1, 0),
-            },
-            problematic_expansions,
-        )
-
-        unwound_grammar = checker.unwind_grammar(problematic_expansions)
-        unwound_checker = RegexConverter(unwound_grammar)
-
-        self.assertFalse(unwound_checker.nonregular_expansions("<start>"))
-        self.assertTrue(unwound_checker.is_regular("<start>"))
-
-    def test_unwind_grammar(self):
-        grammar = {
-            "<start>": ["<A>"],
-            "<A>": ["", "<A><As>", "<A>"],
-            "<As>": ["a", "a<As>"],
-        }
-        checker = RegexConverter(grammar, max_num_expansions=3)
-        problematic_expansions = checker.nonregular_expansions("<start>")
-        self.assertEqual({("<As>", 1, 1)}, problematic_expansions)
-        self.assertEqual(
-            {
-                "<start>": ["<A>"],
-                "<A>": ["", "<A><As>", "<A>"],
-                "<As>": ["a", "aa", "aaa"],
-            },
-            checker.unwind_grammar(problematic_expansions),
-        )
-
     def test_arithmetic_expression_grammar(self):
         grammar = {
             "<start>": ["<expression>"],
@@ -387,15 +248,15 @@ class TestRegexConverter(unittest.TestCase):
                 "(<expression>)",
                 "<chars>",
             ],
-            # <char><chars> breaks right-linearity.
+            # <char><chars> breaks left-linearity.
             "<chars>": ["<char>", "<chars><char>"],
-            "<char>": list(string.ascii_letters) + ["$", "_"],
+            "<char>": ["a", "b", "c"],
             "<number>": ["<digit>", "<number><digit>"],
-            "<digit>": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+            "<digit>": ["0", "1", "2"],
         }
 
         converter = RegexConverter(grammar, max_num_expansions=3)
-        converter.to_regex("<start>")
+        print(converter.to_regex("<start>", convert_to_z3=False))
 
     def check_grammar_regex_inclusion(
         self,

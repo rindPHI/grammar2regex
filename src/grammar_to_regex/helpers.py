@@ -1,21 +1,31 @@
-import itertools
 import re
 from functools import cache
 from itertools import groupby
 from operator import itemgetter, sub
 from typing import (
     List,
-    Set,
-    Union,
-    Dict,
     TypeVar,
+    Sequence,
+    Tuple,
+    Mapping,
     Iterable,
-    Callable,
+    Any,
 )
 
 from frozendict import frozendict
 
-from grammar_to_regex.type_defs import Grammar, CanonicalGrammar
+from grammar_to_regex.type_defs import (
+    Grammar,
+    CanonicalGrammar,
+    FrozenOrderedSet,
+    EdgeDict,
+)
+
+A = TypeVar("A")
+B = TypeVar("B")
+
+S = TypeVar("S")
+T = TypeVar("T")
 
 
 def split_expansion(expansion: str) -> List[str]:
@@ -46,8 +56,6 @@ def split_expansion(expansion: str) -> List[str]:
 
     return [token for token in result if token]
 
-    # return [token for token in re.split(RE_NONTERMINAL, expansion) if token]
-
 
 def reverse_grammar(grammar: Grammar) -> Grammar:
     return {
@@ -62,60 +70,10 @@ def reverse_expansion(expansion: str) -> str:
 
 @cache
 def is_nonterminal(element: str) -> bool:
+    assert isinstance(
+        element, str
+    ), f"Expected string, got {type(element).__name__} ({element})"
     return RE_NONTERMINAL.match(element) is not None
-
-
-class GrammarElem:
-    def __init__(self, elem):
-        self.elem = elem
-        self.hash = None
-
-    def __str__(self):
-        return self.elem
-
-    def __repr__(self):
-        return f"{type(self).__name__}({self.elem})"
-
-    def __hash__(self):
-        if self.hash is None:
-            self.hash = hash(repr(self))
-        return self.hash
-
-    def __eq__(self, other):
-        if type(other) is not type(self):
-            return False
-        elif hash(other) == hash(self):
-            return self.elem == other.elem
-        else:
-            return False
-
-
-class Terminal(GrammarElem):
-    def __init__(self, elem):
-        super().__init__(elem)
-
-
-class Nonterminal(GrammarElem):
-    def __init__(self, elem):
-        super().__init__(elem)
-
-
-def str2grammar_elem(
-    elem: str, cache: Union[None, Dict[str, GrammarElem]] = None
-) -> GrammarElem:
-    if cache is not None and elem in cache:
-        return cache[elem]
-
-    if is_nonterminal(elem):
-        result = Nonterminal(elem)
-    else:
-        result = Terminal(elem)
-
-    if cache is None:
-        return result
-    else:
-        cache: Dict[str, GrammarElem]
-        return cache.setdefault(elem, result)
 
 
 def split_at_nonterminal_boundaries(expansion):
@@ -146,147 +104,110 @@ def non_canonical(grammar: CanonicalGrammar) -> Grammar:
     )
 
 
-TypedCanonicalGrammar = Dict[GrammarElem, List[List[GrammarElem]]]
-
-
-def grammar_to_typed_canonical(
-    ordinary_grammar: Grammar, cache: Union[None, Dict[str, GrammarElem]] = None
-) -> TypedCanonicalGrammar:
-    canonical_grammar = canonical(ordinary_grammar)
-    typed_canonical_grammar = {}
-
-    for key, expansions in canonical_grammar.items():
-        typed_canonical_grammar[str2grammar_elem(key, cache)] = [
-            [str2grammar_elem(elem, cache) for elem in str_expansion]
-            for str_expansion in expansions
-        ]
-
-    return typed_canonical_grammar
-
-
-def typed_canonical_to_grammar(
-    typed_canonical_grammar: TypedCanonicalGrammar,
-) -> Grammar:
-    ordinary_grammar = {}
-
-    for key, expansions in typed_canonical_grammar.items():
-        ordinary_grammar[str(key)] = [
-            "".join(map(str, expansion)) for expansion in expansions
-        ]
-
-    return ordinary_grammar
-
-
 RE_NONTERMINAL = re.compile(r"(<[^<> ]*>)")
 
 
-def nonterminals(expansion: str) -> List[str]:
-    return RE_NONTERMINAL.findall(expansion)
+def delete_unreachable(grammar: Grammar) -> Grammar:
+    closure = compute_closure(
+        {fr: edges.values() for fr, edges in edges_in_grammar(grammar).items()}
+    )
+
+    return frozendict(
+        {
+            nonterminal: alternatives
+            for nonterminal, alternatives in grammar.items()
+            if nonterminal == "<start>" or nonterminal in closure.get("<start>", ())
+        }
+    )
 
 
-def reachable_nonterminals(
-    grammar: Grammar, _start_symbol: str = "<start>"
-) -> Set[str]:
-    reachable = set()
+def consecutive_numbers(l: Sequence[int]) -> Tuple[Tuple[int, ...], ...]:
+    """
+    Groups the passed sequence into buckets of consecutive numbers.
 
-    def _find_reachable_nonterminals(grammar, symbol):
-        nonlocal reachable
-        reachable.add(symbol)
-        for expansion in grammar.get(symbol, []):
-            for nonterminal in nonterminals(expansion):
-                if nonterminal not in reachable:
-                    _find_reachable_nonterminals(grammar, nonterminal)
+    >>> consecutive_numbers([1, 2, 5, 6, 7, 10, 11, 12])
+    ((1, 2), (5, 6, 7), (10, 11, 12))
 
-    _find_reachable_nonterminals(grammar, _start_symbol)
-    return reachable
+    :param l: The sequence to group.
+    :return: A tuple of tuples, each containing a group of consecutive numbers.
+    """
 
-
-def unreachable_nonterminals(grammar: Grammar, _start_symbol="<start>") -> Set[str]:
-    return grammar.keys() - reachable_nonterminals(grammar, _start_symbol)
-
-
-def delete_unreachable(grammar):
-    for unreachable in unreachable_nonterminals(grammar):
-        del grammar[unreachable]
-
-
-def consecutive_numbers(l: List[int]) -> List[List[int]]:
-    result: List[List[int]] = []
+    result: Tuple[Tuple[int, ...], ...] = ()
 
     for k, g in groupby(enumerate(l), lambda x: sub(*x)):
-        result.append(list(map(itemgetter(1), g)))
+        result += (tuple(map(itemgetter(1), g)),)
 
     return result
 
 
-S = TypeVar("S")
-T = TypeVar("T")
+def fresh_nonterminal(
+    grammar: Grammar | CanonicalGrammar, suggestion: str = "<fresh>"
+) -> str:
+    assert is_nonterminal(suggestion)
+    result = suggestion
+    while result in grammar:
+        result = "<" + result[1:-1] + "_" + ">"
+    return result
 
 
-def dict_of_lists_to_list_of_dicts(
-    dict_of_lists: Dict[S, Iterable[T]]
-) -> List[Dict[S, T]]:
-    keys = list(dict_of_lists.keys())
-    list_of_values = [dict_of_lists[key] for key in keys]
-    product = list(itertools.product(*list_of_values))
+def compute_closure(
+    relation: Mapping[A, Iterable[B]]
+) -> frozendict[A, FrozenOrderedSet[B]]:
+    edges = frozendict(
+        {a: frozendict({b: None for b in bs}) for a, bs in relation.items()}
+    )
 
-    return [dict(zip(keys, product_elem)) for product_elem in product]
+    # closure(A, B) :- edge(A, B).
+    closure = edges
+
+    changed = True
+    while changed:
+        changed = False
+
+        # closure(A, C) :- edge(A, B), closure(B, C).
+        for a in edges:
+            for b in edges[a]:
+                for c in closure[b]:
+                    if c in closure[a]:
+                        continue
+
+                    changed = True
+                    closure = closure.set(a, closure.get(a, frozendict()).set(c, None))
+
+    return closure
 
 
-def grammar_to_frozen(grammar: Grammar) -> Grammar:
-    if isinstance(grammar, frozendict):
-        return grammar
-    return frozendict({k: tuple(v) for k, v in grammar.items()})
+def edges_in_grammar(grammar: Grammar | CanonicalGrammar) -> EdgeDict:
+    if not is_canonical_grammar(grammar):
+        grammar = canonical(grammar)
+
+    return frozendict(
+        {
+            nonterminal: frozendict(
+                {
+                    (expansion_idx, symbol_idx): symbol
+                    for expansion_idx, expansion in enumerate(expansions)
+                    for symbol_idx, symbol in enumerate(expansion)
+                    if symbol in grammar  # only consider nonterminals
+                }
+            )
+            for nonterminal, expansions in grammar.items()
+        }
+    )
 
 
-def grammar_to_mutable(grammar: Grammar) -> Grammar:
-    if not isinstance(grammar, frozendict):
-        assert isinstance(grammar, dict)
-        return grammar
-    return {k: list(v) for k, v in grammar.items()}
-
-
-def star(f: Callable[..., T], do_flatten=False) -> Callable[..., T]:
-    """
-    Transforms a function accepting n arguments into one accepting a sequence of n
-    elements. If :code:`do_flatten` is True, the returned function accepts multiple
-    arguments. Sequences in these arguments are flattened.
-
-    Example
-    -------
-
-    Transforming a function adding two numbers to a function adding the two elements
-    of a list of numbers:
-
-    >>> star(lambda a, b: a + b)([1, 2])
-    3
-
-    Transforming a function adding four numbers to a function adding all passed numbers
-    or their elements using flattening. There must be exactly four numbers in the
-    given arguments.
-
-    >>> star(lambda a, b, c, d: a + b + c + d, do_flatten=True)(1, [2, 3], 4)
-    10
-
-    It does not matter if the passed arguments are inside a list or not:
-
-    >>> star(lambda a, b, c, d: a + b + c + d, do_flatten=True)([1], 2, [3, 4])
-    10
-
-    But we must pass exactly five numbers:
-
-    >>> star(lambda a, b, c, d: a + b + c + d, do_flatten=True)(1, [2, 3, 4], 5)
-    Traceback (most recent call last):
-    ...
-    TypeError: <lambda>() takes 4 positional arguments but 5 were given
-
-    :param f: The function to be "starred."
-    :param do_flatten: Set to True if the returned function should accept multiple
-        arguments that are flattened before forwarding them to the original function.
-    :return: The "starred" function.
-    """
-
-    if do_flatten:
-        return lambda *x: f(*flatten(x))
-    else:
-        return lambda x: f(*x)
+def is_canonical_grammar(grammar: Any) -> bool:
+    return isinstance(grammar, Mapping) and all(
+        isinstance(nonterminal, str)
+        and isinstance(alternatives, Sequence)
+        and all(
+            isinstance(alternative, Sequence)
+            and not isinstance(alternative, str)
+            and isinstance(symbol, str)
+            or len(type(symbol).__mro__) > 1
+            and type(symbol).__mro__[1].__name__ == "Regex"
+            for alternative in alternatives
+            for symbol in alternative
+        )
+        for nonterminal, alternatives in grammar.items()
+    )

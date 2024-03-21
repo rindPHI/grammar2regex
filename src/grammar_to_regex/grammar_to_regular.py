@@ -1,80 +1,47 @@
 import logging
-from typing import Tuple, Mapping, Sequence, Optional, TypeVar, Iterable, Literal
+from typing import Tuple, Mapping, Sequence, Optional, TypeVar, Literal
 
 from frozendict import frozendict
 
 from grammar_to_regex.helpers import (
     is_nonterminal,
     split_at_nonterminal_boundaries,
-    star,
+    compute_closure,
+    edges_in_grammar,
 )
-from grammar_to_regex.type_defs import CanonicalGrammar
+from grammar_to_regex.type_defs import (
+    CanonicalGrammar,
+    FrozenCanonicalGrammar,
+    EdgeDict,
+    FrozenOrderedSet,
+)
 
 A = TypeVar("A")
 B = TypeVar("B")
 T = TypeVar("T")
-FrozenOrderedSet = frozendict[T, None]
+
 LOGGER = logging.getLogger(__name__)
 
-EdgeDict = frozendict[str, frozendict[Tuple[int, int], str]]
 
-
-def edges_in_grammar(grammar: CanonicalGrammar) -> EdgeDict:
-    return frozendict(
-        {
-            nonterminal: frozendict(
-                {
-                    (expansion_idx, symbol_idx): symbol
-                    for expansion_idx, expansion in enumerate(expansions)
-                    for symbol_idx, symbol in enumerate(expansion)
-                    if symbol in grammar  # only consider nonterminals
-                }
-            )
-            for nonterminal, expansions in grammar.items()
-        }
-    )
-
-
-def compute_closure(
-    relation: Mapping[A, Iterable[B]]
-) -> frozendict[A, FrozenOrderedSet[B]]:
-    edges = frozendict(
-        {a: frozendict({b: None for b in bs}) for a, bs in relation.items()}
-    )
-
-    # closure(A, B) :- edge(A, B).
-    closure = edges
-
-    changed = True
-    while changed:
-        changed = False
-
-        # closure(A, C) :- edge(A, B), closure(B, C).
-        for a in edges:
-            for b in edges[a]:
-                for c in closure[b]:
-                    if c in closure[a]:
-                        continue
-
-                    changed = True
-                    closure = closure.set(a, closure.get(a, frozendict()).set(c, None))
-
-    return closure
+LEFT_LINEAR, RIGHT_LINEAR, NON_RECURSIVE = (
+    "left-linear",
+    "right-linear",
+    "non-recursive",
+)
 
 
 def analyze_expansions(
     canonical_grammar: CanonicalGrammar,
     all_edges: Optional[EdgeDict] = None,
     closure: Optional[Mapping[str, FrozenOrderedSet[str]]] = None,
-    include_nonrecursive_expansions: bool = False,
 ) -> Tuple[EdgeDict, EdgeDict, EdgeDict]:
-    # Note: This function only reports (indirectly) recursive nonterminals, that is,
-    #       those that reach a nonterminal reaching itself, if include_nonrecursive_expansions
-    #       is not set to true.
+    # Note: This function only reports recursive nonterminals, that is, those that
+    #       reach the nonterminal on the left-hand side of the current grammar rule,
+    #       if include_nonrecursive_expansions is False.
     all_edges = edges_in_grammar(canonical_grammar) if all_edges is None else all_edges
     closure = (
         compute_closure({fr: edges.values() for fr, edges in all_edges.items()})
-        if closure is None and not include_nonrecursive_expansions
+        if closure is None
         else closure
     )
 
@@ -96,10 +63,13 @@ def analyze_expansions(
                 ), f"Trivial recursion {fr} -> {fr} detected"
                 continue
 
-            if not include_nonrecursive_expansions and not any(
-                recursion_anchor in closure.get(recursion_anchor, {})
-                for recursion_anchor in closure.get(to, {})
-            ):
+            # if not any(
+            #         recursion_anchor in closure.get(recursion_anchor, {})
+            #         for recursion_anchor in closure.get(to, {})
+            # ):
+            #     continue
+
+            if fr not in closure.get(to, {}):
                 continue
 
             # Recursive expansion
@@ -126,7 +96,7 @@ def analyze_expansions(
 
 def filter_recursive_expansions(
     expansions: Sequence[Sequence[str]],
-    recursive_origin_nonterminal: str,
+    from_nonterminal: str,
     closure: Mapping[str, FrozenOrderedSet[str]],
     allow_short_circuits: bool = False,
 ) -> Tuple[Tuple[str, ...], ...]:
@@ -135,11 +105,12 @@ def filter_recursive_expansions(
         for expansion in expansions
         if len(expansion) == 1
         or all(
-            (allow_short_circuits and symbol == recursive_origin_nonterminal)
-            or not any(
-                rec_symbol in closure.get(rec_symbol, {})
-                for rec_symbol in closure.get(symbol, {})
-            )
+            (allow_short_circuits and symbol == from_nonterminal)
+            or from_nonterminal not in closure.get(symbol, {})
+            # not any(
+            #     rec_symbol in closure.get(rec_symbol, {})
+            #     for rec_symbol in closure.get(symbol, {})
+            # )
             for symbol in expansion
         )
     )
@@ -196,6 +167,8 @@ def eliminate_recursive_expansion(
     nonterminal: str,
     expansion_idx: int,
     symbol_idx: int,
+    expansion_depth: int = 3,
+    expansion_depth_direct_recursion: int = 1,
 ) -> CanonicalGrammar:
     nonterminal_to_expand = grammar[nonterminal][expansion_idx][symbol_idx]
 
@@ -204,7 +177,7 @@ def eliminate_recursive_expansion(
         nonterminal,
         grammar,
         closure,
-        limit=3,
+        limit=expansion_depth,
         keep_short_circuits=True,
     )
 
@@ -230,7 +203,7 @@ def eliminate_recursive_expansion(
         nonterminal,
         grammar,
         closure,
-        limit=1,
+        limit=expansion_depth_direct_recursion,
         keep_short_circuits=False,
     )
 
@@ -266,7 +239,11 @@ def eliminate_recursive_expansion(
 
 def inline_nonregular_recursive_nonterminals(
     grammar: CanonicalGrammar,
-) -> Tuple[CanonicalGrammar, Literal["left-linear", "right-linear", "non-recursive"]]:
+    expansion_depth: int = 3,
+    expansion_depth_direct_recursion: int = 1,
+) -> Tuple[
+    FrozenCanonicalGrammar, Literal["left-linear", "right-linear", "non-recursive"]
+]:
     assert all(
         all(
             isinstance(alternative, list) or isinstance(alternative, tuple)
@@ -328,72 +305,27 @@ def inline_nonregular_recursive_nonterminals(
         )
 
         grammar = eliminate_recursive_expansion(
-            grammar, closure, nonterminal, expansion_idx, symbol_idx
+            grammar,
+            closure,
+            nonterminal,
+            expansion_idx,
+            symbol_idx,
+            expansion_depth,
+            expansion_depth_direct_recursion,
         )
-
-
-def inline_nonrecursive_nonregular_nonterminals(
-    grammar: CanonicalGrammar,
-    grammar_type: Literal["left-linear", "right-linear", "non-recursive"],
-) -> CanonicalGrammar:
-    while True:
-        left_recursive, right_recursive, remaining_expansions = map(
-            edge_dict_to_set,
-            analyze_expansions(
-                grammar, edges_in_grammar(grammar), include_nonrecursive_expansions=True
-            ),
-        )
-
-        if remaining_expansions:
-            to_eliminate = remaining_expansions
-        elif left_recursive and grammar_type == "right-linear":
-            to_eliminate = right_recursive
-        elif right_recursive and grammar_type == "left-linear":
-            to_eliminate = left_recursive
-        else:
-            break
-
-        nonterminal, (expansion_idx, symbol_idx), symbol = next(iter(to_eliminate))
-
-        grammar = merge_terminal_symbols(
-            frozendict(
-                {
-                    key_nonterminal: tuple(
-                        new_expansion
-                        for _expansion_idx, expansion in enumerate(expansions)
-                        for new_expansion in (
-                            (expansion,)
-                            if key_nonterminal != nonterminal
-                            or expansion_idx != _expansion_idx
-                            else (
-                                tuple(expansion[:symbol_idx])
-                                + tuple(nonrecursive_expansion)
-                                + tuple(expansion[symbol_idx + 1 :])
-                                for nonrecursive_expansion in grammar[symbol]
-                            )
-                        )
-                    )
-                    for key_nonterminal, expansions in grammar.items()
-                }
-            )
-        )
-
-    return grammar
 
 
 def regularize_grammar(
-    grammar: CanonicalGrammar, inline_nonrecursive_nonterminals: bool = False
-) -> Tuple[CanonicalGrammar, Literal["left-linear", "right-linear", "non-recursive"]]:
-    result, verdict = inline_nonregular_recursive_nonterminals(grammar)
-    assert verdict in ["left-linear", "right-linear", "non-recursive"]
-    assert grammar_is_extended_regular(
-        result, verdict, nonrecursive_nonterminals_allowed=True
+    grammar: CanonicalGrammar,
+    expansion_depth: int = 3,
+    expansion_depth_direct_recursion: int = 1,
+) -> Tuple[
+    FrozenCanonicalGrammar, Literal["left-linear", "right-linear", "non-recursive"]
+]:
+    result, verdict = inline_nonregular_recursive_nonterminals(
+        grammar, expansion_depth, expansion_depth_direct_recursion
     )
-
-    if not inline_nonrecursive_nonterminals:
-        return result, verdict
-
-    result = inline_nonrecursive_nonregular_nonterminals(result, verdict)
+    assert verdict in [LEFT_LINEAR, RIGHT_LINEAR, NON_RECURSIVE]
     assert grammar_is_extended_regular(result, verdict)
 
     return result, verdict
@@ -402,14 +334,12 @@ def regularize_grammar(
 def grammar_is_extended_regular(
     grammar: CanonicalGrammar,
     check_for_type: Literal["left-linear", "right-linear", "non-recursive"],
-    nonrecursive_nonterminals_allowed: bool = False,
 ) -> bool:
     assert check_for_type in ["left-linear", "right-linear", "non-recursive"]
 
-    if nonrecursive_nonterminals_allowed:
-        closure = compute_closure(
-            {fr: edges.values() for fr, edges in edges_in_grammar(grammar).items()}
-        )
+    closure = compute_closure(
+        {fr: edges.values() for fr, edges in edges_in_grammar(grammar).items()}
+    )
 
     return all(
         len(alternative) == 1  # Single symbol
@@ -419,14 +349,8 @@ def grammar_is_extended_regular(
             if check_for_type == "left-linear"
             else symbol_idx == len(alternative) - 1
         )  # Left or right-linear
-        or (
-            nonrecursive_nonterminals_allowed
-            and not any(
-                recursion_anchor in closure.get(recursion_anchor, {})
-                for recursion_anchor in closure.get(symbol, {})
-            )
-        )  # Non-recursive
-        for alternatives in grammar.values()
+        or nonterminal not in closure.get(symbol, {})  # Non-recursive
+        for nonterminal, alternatives in grammar.items()
         for alternative in alternatives
         for symbol_idx, symbol in enumerate(alternative)
     )

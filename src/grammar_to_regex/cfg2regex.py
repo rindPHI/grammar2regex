@@ -1,712 +1,509 @@
 import itertools
 import logging
-from enum import Enum
-from typing import Dict, List, Tuple, Generator, Optional, cast
+from functools import cache
+from typing import Tuple, Optional, TypeAlias
 
 import z3
-from grammar_graph.gg import (
-    GrammarGraph,
-    NonterminalNode,
-    ChoiceNode,
-    TerminalNode,
-    Node,
-)
-from orderedset import OrderedSet
+from frozendict import frozendict
 
-from grammar_to_regex.grammar_to_regular import regularize_grammar
-from grammar_to_regex.helpers import (
-    reverse_grammar,
-    delete_unreachable,
-    grammar_to_typed_canonical,
-    GrammarElem,
-    str2grammar_elem,
-    Nonterminal,
-    typed_canonical_to_grammar,
-    consecutive_numbers,
-    grammar_to_frozen,
-    non_canonical, canonical, grammar_to_mutable,
+from grammar_to_regex.grammar_to_regular import (
+    regularize_grammar,
+    LEFT_LINEAR,
+    RIGHT_LINEAR,
+    NON_RECURSIVE,
 )
-from grammar_to_regex.nfa import NFA, Transition
+from grammar_to_regex.helpers import (
+    canonical,
+    compute_closure,
+    edges_in_grammar,
+)
+from grammar_to_regex.helpers import (
+    is_nonterminal,
+    fresh_nonterminal,
+    consecutive_numbers,
+)
 from grammar_to_regex.regex import (
     Regex,
-    concat,
+    Singleton,
     Star,
     Union,
-    Singleton,
-    regex_to_z3,
-    union,
-    Range,
     Concat,
-    star,
+    Range,
+    union,
+    concat,
     epsilon,
+    star,
 )
-from grammar_to_regex.type_defs import Grammar, NonterminalType
+from grammar_to_regex.regex import (
+    regex_to_z3,
+)
+from grammar_to_regex.type_defs import (
+    CanonicalGrammar,
+    FrozenCanonicalGrammar,
+    FrozenOrderedSet,
+)
+from grammar_to_regex.type_defs import Grammar
 
+LOGGER = logging.getLogger(__name__)
 
-class GrammarType(Enum):
-    UNDET = 0  # Yet unknown, or neither left- nor rightlinear (tree structure)
-    LEFT_LINEAR = 1
-    RIGHT_LINEAR = 2
-
-
-def state_generator(base: str) -> Generator[str, None, None]:
-    i = 1
-    while True:
-        yield f"{base}_{i}"
-        i += 1
+IntermediateGrammar: TypeAlias = frozendict[str, Tuple[Tuple[Regex, str] | Regex, ...]]
 
 
 class RegexConverter:
     def __init__(
         self,
         grammar: Grammar,
-        max_num_expansions: int = 10,
+        max_num_expansions: int = 3,
+        expansion_depth_direct_recursion: int = 1,
         compress_unions: bool = False,
     ):
         """
+        *LEGACY INTERFACE*
+
         :param grammar: The underlying grammar.
-        :param max_num_expansions: For non-regular (sub) grammars, we can unwind problematic nonterminals in
-                                   expansions. This parameter sets a depth bound on the number of unwindings.
-        :param compress_unions: If True, unions of single-char regexes will be compressed to range expressions.
+        :param max_num_expansions: For non-regular (sub) grammars,
+            we can unwind problematic nonterminals in expansions.
+            This parameter sets a depth bound on the number of unwindings.
+        :param expansion_depth_direct_recursion: The depth to which remaining
+            directly recursive elements are expanded for non-regular (sub)
+            grammars..
+        :param compress_unions: If True, unions of single-char regexes
+            will be compressed to range expressions.
         """
 
-        self.grammar: Grammar = grammar_to_frozen(grammar)
+        self.grammar: CanonicalGrammar = canonical(grammar)
         self.max_num_expansions = max_num_expansions
+        self.expansion_depth_direct_recursion = expansion_depth_direct_recursion
         self.compress_unions = compress_unions
-
-        self.grammar_type: GrammarType = GrammarType.UNDET
-        self.grammar_graph: GrammarGraph = GrammarGraph.from_grammar(grammar)
-
-        self.regularity_cache: Dict[str, bool] = {}
-        self.regularity_cache_created_for: Grammar = grammar
-
-        self.nfa_cache: Dict[str, NFA] = {}
-        self.nfa_cache_created_for: Grammar = grammar
-        self.state_gen = state_generator("q")
-
-        self.logger = logging.getLogger("RegexConverter")
 
     def to_regex(self, node_symbol: str, convert_to_z3=True) -> z3.ReRef | Regex:
         assert isinstance(node_symbol, str)
 
-        # Store the old grammar and grammar graph, as we will modify them.
-        old_grammar = self.grammar
-        old_grammar_graph = self.grammar_graph
-
-        self.grammar_graph = self.grammar_graph.subgraph(node_symbol)
-        self.grammar = grammar_to_frozen(self.grammar_graph.to_grammar())
-
-        regular_grammar, grammar_type = regularize_grammar(canonical(self.grammar))
-
-        self.grammar_type = (
-            GrammarType.LEFT_LINEAR
-            if grammar_type == "left-linear"
-            else GrammarType.RIGHT_LINEAR
+        result = convert_grammar_to_regex(
+            self.grammar, node_symbol, do_compress_unions=self.compress_unions
         )
-
-        self.grammar = non_canonical(regular_grammar)
-        # TODO: grammar_to_mutable will be obsolete in newer GrammarGraph versions
-        self.grammar_graph = GrammarGraph.from_grammar(grammar_to_mutable(self.grammar))
-        node = self.grammar_graph.get_node(node_symbol)
-
-        if self.grammar_graph.subgraph(node).is_tree():
-            result = self.tree_to_regex(node)
-        elif self.grammar_type == GrammarType.LEFT_LINEAR:
-            result = self.left_linear_grammar_to_regex(node_symbol)
-        else:
-            result = self.right_linear_grammar_to_regex(node_symbol)
-
-        # Restore the old grammar and grammar graph
-        self.grammar = old_grammar
-        self.grammar_graph = old_grammar_graph
-
-        if self.compress_unions:
-            result = compress_unions(result)
 
         return result if not convert_to_z3 else regex_to_z3(result)
 
-    def left_linear_grammar_to_regex(self, node_symbol: str | Node) -> Regex:
-        node = self.str_to_nonterminal_node(node_symbol)
-        self.assert_regular(node)
-        assert self.grammar_type == GrammarType.LEFT_LINEAR
 
-        self.logger.debug("Reversing left-linear grammar for NFA conversion.")
-        old_grammar_graph = self.grammar_graph
-        self.grammar_graph = GrammarGraph.from_grammar(reverse_grammar(self.grammar))
-        # Grammar represented by graph is right-linear now
+@cache
+def convert_grammar_to_regex(
+    grammar: FrozenCanonicalGrammar,
+    start_symbol: str = "<start>",
+    do_compress_unions: bool = True,
+    end_symbol: Optional[str] = None,
+) -> Regex:
+    """
+    TODO: Document.
 
-        nfa = self.right_linear_grammar_to_nfa(node_symbol)
-        assert nfa is not None
+    Kudos to Rahul Gopinath for his blog entry:
+    https://rahul.gopinath.org/post/2021/11/13/regular-grammar-to-regular-expression/
 
-        self.logger.debug("Reversing NFA created for reversed left-linear grammar")
-        nfa = nfa.reverse()
+    >>> from grammar_to_regex.helpers import canonical
+    >>> grammar = canonical(
+    ...     {
+    ...         "<start>": ["<A>"],
+    ...         "<A>": ["a", "a<B><A>", "<B>a<A>"],
+    ...         "<B>": ["b", "b<B>"],
+    ...     }
+    ... )
+    >>> print(convert_grammar_to_regex(grammar))
+    ((("a" • "b"* • "b") | ("b"* • "b" • "a"))* • "a")
 
-        self.grammar_graph = old_grammar_graph
-        self.logger.debug(f"Converting NFA of sub grammar for {node_symbol} to regex")
+    :param grammar:
+    :param start_symbol:
+    :param end_symbol:
+    :param do_compress_unions:
+    :return:
+    """
 
-        return self.nfa_to_regex(nfa)
+    assert is_nonterminal(start_symbol)
+    assert start_symbol in grammar
+    assert end_symbol is None or is_nonterminal(end_symbol)
 
-    def right_linear_grammar_to_regex(self, node: str | Node) -> Regex:
-        node = self.str_to_nonterminal_node(node)
-        self.assert_regular(node)
-        assert self.grammar_type != GrammarType.LEFT_LINEAR
+    regular_grammar, grammar_type = regularize_grammar(grammar)
+    assert grammar_type in [LEFT_LINEAR, RIGHT_LINEAR, NON_RECURSIVE]
 
-        nfa = self.right_linear_grammar_to_nfa(node)
-        assert nfa is not None
+    if grammar_type == LEFT_LINEAR:
+        return reverse_regex(convert_grammar_to_regex(reverse_grammar(regular_grammar)))
 
-        self.logger.debug(f"Converting NFA of sub grammar for {node.symbol} to regex")
-        return self.nfa_to_regex(nfa)
+    closure: frozendict[str, FrozenOrderedSet[str]] = compute_closure(
+        {fr: edges.values() for fr, edges in edges_in_grammar(grammar).items()}
+    )
 
-    def nfa_to_regex(self, nfa: Optional[NFA]) -> Regex:
-        assert not [
-            state
-            for state in nfa.states
-            if not any(
-                [(s1, l, s2) for (s1, l, s2) in nfa.transitions if state in (s1, s2)]
-            )
-        ], f"Found isolated states!"
+    if end_symbol is None:
+        end_symbol, regular_grammar = add_end_symbol(regular_grammar, closure)
 
-        def label_from_singleton_tr(transitions: List[Transition]) -> Optional[Regex]:
-            return None if not transitions else transitions[0][1]
-
-        # It's much faster if we start eliminating states with few predecessors and successors
-        intermediate_states = [
-            state
-            for state in nfa.states
-            if state not in (nfa.initial_state, nfa.final_state)
-        ]
-        intermediate_states = sorted(
-            intermediate_states,
-            key=lambda s: len(nfa.predecessors(s)) + len(nfa.successors(s)),
+        closure = compute_closure(
+            {
+                fr: edges.values()
+                for fr, edges in edges_in_grammar(regular_grammar).items()
+            }
         )
 
-        while len(intermediate_states) > 0:
-            s = intermediate_states[0]
+    assert end_symbol in closure.get(start_symbol, ())
 
-            predecessors = [p for p in nfa.predecessors(s) if p != s]
-            successors = [q for q in nfa.successors(s) if q != s]
-            loops = nfa.transitions_between(s, s)
-            assert len(loops) <= 1
+    # We solve the non-recursive nonterminals in each *reachable* rule.
+    # On the way, we convert the terminal prefix of each expansion
+    # alternative to a regex. As a result, all alternatives consist of
+    # at most two elements: an optional regex and a nonterminal string.
+    regular_grammar_with_regex_prefixes = convert_grammar_to_intermediate_grammar(
+        regular_grammar, closure, start_symbol, end_symbol
+    )
 
-            self.logger.debug(
-                f"Eliminating state {s} ({len(predecessors)} preds / {len(successors)} succs), "
-                f"{len(nfa.states)} states left"
-            )
+    assert end_symbol in regular_grammar_with_regex_prefixes
+    assert is_intermediate_grammar(regular_grammar_with_regex_prefixes, end_symbol)
 
-            E_s_s = label_from_singleton_tr(loops) or epsilon()
+    # Compress prefixes.
+    regular_grammar_with_union_prefixes = compress_prefixes_to_unions(
+        regular_grammar_with_regex_prefixes, end_symbol
+    )
 
-            for p, q in itertools.product(predecessors, successors):
-                # New label: E(p, q) + E(p, s)E(s, s)*E(s, q)
-                p_q_trans = nfa.transitions_between(p, q)
-                p_s_trans = nfa.transitions_between(p, s)
-                s_q_trans = nfa.transitions_between(s, q)
-                assert (
-                    len(p_q_trans) <= 1 and len(p_s_trans) <= 1 and len(s_q_trans) <= 1
-                )
+    assert end_symbol in regular_grammar_with_union_prefixes
+    assert is_intermediate_grammar(regular_grammar_with_union_prefixes, end_symbol)
 
-                E_p_q = label_from_singleton_tr(p_q_trans)
-                E_p_s = label_from_singleton_tr(p_s_trans)
-                assert E_p_s is not None
-                E_s_q = label_from_singleton_tr(s_q_trans)
-                assert E_s_q is not None
+    # Eliminate direct recursion.
+    direct_recursion_free_grammar = eliminate_direct_recursion(
+        regular_grammar_with_union_prefixes, end_symbol
+    )
+    assert end_symbol in direct_recursion_free_grammar
+    assert is_intermediate_grammar(direct_recursion_free_grammar, end_symbol)
 
-                # E(p, s)E(s, s)*E(s, q)
-                regex = concat(E_p_s, star(E_s_s), E_s_q)
+    resulting_grammar = direct_recursion_free_grammar
+    while len(resulting_grammar) > 2:
+        # Eliminate nonterminal symbols.
+        symbol_to_eliminate = next(
+            (
+                nonterminal
+                for nonterminal in resulting_grammar
+                if nonterminal != start_symbol and nonterminal != end_symbol
+            ),
+            None,
+        )
+        assert symbol_to_eliminate is not None
 
-                if E_p_q is not None:
-                    regex = union(E_p_q, regex)
-
-                nfa.delete_transitions(p_q_trans)
-                nfa.add_transition(p, regex, q)
-
-            nfa.delete_transitions(loops)
-            nfa.delete_state(s)
-            intermediate_states.remove(s)
-
-        assert len(nfa.states) == 2
-
-        if len(nfa.transitions) >= 1:
-            p = nfa.initial_state
-            q = nfa.final_state
-
-            assert len(nfa.transitions_between(p, q)) == 1
-
-            p_p_trans = nfa.transitions_between(p, p)
-            p_q_trans = nfa.transitions_between(p, q)
-            q_q_trans = nfa.transitions_between(q, q)
-
-            E_p_q = label_from_singleton_tr(p_q_trans) or epsilon()
-            assert E_p_q is not None
-            E_p_p = label_from_singleton_tr(p_p_trans) or epsilon()
-            E_q_q = label_from_singleton_tr(q_q_trans) or epsilon()
-
-            # E(p,p)*E(p,q)E(q,q)*
-            return concat(star(E_p_p), E_p_q, star(E_q_q))
-        else:
-            return next(iter(nfa.transitions))[1]
-
-    def right_linear_grammar_to_nfa(self, node: str | Node) -> NFA:
-        node = self.str_to_nonterminal_node(node)
-        self.assert_regular(node)
-
-        if self.nfa_cache_created_for == self.grammar and node.symbol in self.nfa_cache:
-            return self.nfa_cache[node.symbol]
-        elif self.nfa_cache_created_for != self.grammar:
-            self.nfa_cache_created_for = self.grammar
-            self.nfa_cache = {}
-
-        self.logger.debug(
-            f"Converting sub grammar for nonterminal {node.symbol} to NFA"
+        resulting_grammar = eliminate_direct_recursion(
+            eliminate_symbol(resulting_grammar, symbol_to_eliminate, end_symbol),
+            end_symbol,
         )
 
-        nfa = NFA()
-        final_state = "[final]"
-        nfa.add_state(final_state, final=True)
+        assert is_intermediate_grammar(resulting_grammar, end_symbol)
 
-        for nonterminal in GrammarGraph(node).to_grammar():
-            makeinitial = False
-            if nonterminal == node.symbol:
-                makeinitial = True
+    assert len(resulting_grammar) == 2
+    assert start_symbol in resulting_grammar
+    assert end_symbol in resulting_grammar
+    assert all(
+        alternative[-1] == end_symbol for alternative in resulting_grammar[start_symbol]
+    )
 
-            nfa.add_state(
-                self.grammar_graph.get_node(nonterminal).quote_symbol(),
-                initial=makeinitial,
-            )
+    result = union(*(alternative[0] for alternative in resulting_grammar[start_symbol]))
+    assert isinstance(result, Regex)
 
-        visited = [node]
-        queue = [node]
+    return compress_unions(result) if do_compress_unions else result
 
-        while queue:
-            node: NonterminalNode
-            node = queue.pop()
-            visited.append(node)
 
-            choice_node: ChoiceNode
-            for choice_node in node.children:
-                children = choice_node.children
-                assert children, "Choice node has no children, but always should have."
-                current_state = node.quote_symbol()
+def reverse_grammar(grammar: CanonicalGrammar) -> CanonicalGrammar:
+    return frozendict(
+        {
+            key: tuple(tuple(reversed(alternative)) for alternative in alternatives)
+            for key, alternatives in grammar.items()
+        }
+    )
 
-                for child in children[0:-1]:
-                    next_state = nfa.next_free_state(self.state_gen)
-                    nfa.add_state(next_state)
 
-                    if isinstance(child, TerminalNode):
-                        nfa.add_transition(
-                            current_state, Singleton(child.symbol), next_state
-                        )
-                    else:
-                        assert isinstance(child, NonterminalNode)
-                        if self.grammar_graph.subgraph(child).is_tree():
-                            nfa.add_transition(
-                                current_state, self.tree_to_regex(child), next_state
-                            )
-                        else:
-                            if child in self.nfa_cache:
-                                sub_nfa = self.nfa_cache[child.symbol]
-                            else:
-                                sub_nfa = self.right_linear_grammar_to_nfa(child)
-                                self.nfa_cache[child.symbol] = sub_nfa
+def reverse_regex(regex: Regex) -> Regex:
+    match regex:
+        case Star(child):
+            return Star(reverse_regex(child))
+        case Union(children):
+            return Union(tuple(reverse_regex(child) for child in children))
+        case Concat(children):
+            return Concat(tuple(reverse_regex(child) for child in reversed(children)))
+        case _:
+            return regex
 
-                            sub_nfa = sub_nfa.substitute_states(
-                                {
-                                    state: nfa.next_free_state(self.state_gen)
-                                    for state in sub_nfa.states
-                                    if state in nfa.states
-                                    and state != sub_nfa.final_state
-                                }
-                                | {sub_nfa.final_state: next_state}
-                            )
 
-                            for state in sub_nfa.states:
-                                if state not in nfa.states:
-                                    nfa.add_state(state)
-
-                            nfa.add_transitions(sub_nfa.transitions)
-
-                            if (
-                                current_state,
-                                epsilon(),
-                                sub_nfa.initial_state,
-                            ) not in nfa.transitions:
-                                nfa.add_transition(
-                                    current_state, epsilon(), sub_nfa.initial_state
+def convert_grammar_to_intermediate_grammar(
+    grammar: CanonicalGrammar,
+    closure: frozendict[str, FrozenOrderedSet[str]],
+    start_symbol: str,
+    end_symbol: str,
+    do_compress_unions: bool = True,
+) -> IntermediateGrammar:
+    return frozendict(
+        {
+            nonterminal: tuple(
+                (
+                    (
+                        concat(
+                            *(
+                                (
+                                    Singleton(symbol)
+                                    if not is_nonterminal(symbol)
+                                    else convert_grammar_to_regex(
+                                        grammar, symbol, do_compress_unions, end_symbol
+                                    )
                                 )
-
-                    current_state = next_state
-
-                child = children[-1]
-
-                if type(child) is TerminalNode:
-                    nfa.add_transition(
-                        current_state, Singleton(child.symbol), final_state
-                    )
-                else:
-                    nfa.add_transition(
-                        current_state, epsilon(), child.quote_symbol(), safe=False
-                    )
-                    if child not in visited:
-                        visited.append(child)
-                        queue.append(child)
-
-        nfa.delete_isolated_states()
-
-        # Bundle transitions between the same states
-        # for p, q in itertools.product(nfa.states, nfa.states):
-        # TODO: Might no longer be necessary due to sub-NFA renaming?
-        for p, q in [(p, q) for p, _, q in nfa.transitions]:
-            transitions = nfa.transitions_between(p, q)
-            if len(transitions) >= 1:
-                nfa.delete_transitions(transitions)
-                nfa.add_transition(p, union(*[l for (_, l, _) in transitions]), q)
-
-        self.nfa_cache[node.symbol] = nfa
-
-        return nfa
-
-    def tree_to_regex(self, node: str | Node) -> Regex:
-        if type(node) is str:
-            node = self.grammar_graph.get_node(node)
-            assert node
-
-        if isinstance(node, TerminalNode):
-            return Singleton(node.symbol)
-
-        assert type(node) is NonterminalNode
-        assert self.grammar_graph.subgraph(node).is_tree()
-
-        node: NonterminalNode
-        choice_node: ChoiceNode
-
-        union_nodes: List[Regex] = []
-        for choice_node in node.children:
-            children_regexes = [
-                self.tree_to_regex(child) for child in choice_node.children
-            ]
-            child_result = concat(*children_regexes)
-
-            union_nodes.append(child_result)
-
-        return union(*union_nodes)
-
-    def unwind_grammar(
-        self, problematic_expansions_str: OrderedSet[Tuple[NonterminalType, int, int]]
-    ) -> Grammar:
-        """Unwinds the given problematic expansions up to self.max_num_expansions times. In the result, only
-        terminal symbols or nonterminals that are root of a tree in the grammar graph are allowed.
-        """
-
-        canonical_grammar: Dict[GrammarElem, List[List[GrammarElem]]] = (
-            grammar_to_typed_canonical(self.grammar)
-        )
-        replacements: Dict[GrammarElem, List[List[GrammarElem]]] = dict([])
-        problematic_expansions: OrderedSet[Tuple[GrammarElem, int, int]] = OrderedSet(
-            [
-                (str2grammar_elem(nonterminal_str), idx_1, idx_2)
-                for nonterminal_str, idx_1, idx_2 in problematic_expansions_str
-            ]
-        )
-
-        while problematic_expansions:
-            nonterminal: Nonterminal
-            expansion_idx: int
-            nonterminal_idx: int
-            nonterminal, expansion_idx, nonterminal_idx = problematic_expansions.pop()
-
-            expansion = canonical_grammar[nonterminal][expansion_idx]
-            nonterminal_to_expand: Nonterminal = cast(
-                Nonterminal, expansion[nonterminal_idx]
-            )
-            assert isinstance(nonterminal_to_expand, Nonterminal)
-
-            self.logger.debug(
-                f"Unwinding nonterminal {nonterminal_idx + 1} ({nonterminal_to_expand}) in "
-                f"{expansion_idx + 1}. expansion rule of {nonterminal}"
-            )
-
-            expansions: List[List[GrammarElem]]
-            if nonterminal_to_expand in replacements:
-                expansions = replacements[nonterminal_to_expand]
-            else:
-                self.logger.debug(f"Expanding nonterminal {nonterminal_to_expand}")
-                expansions = expand_nonterminals(
-                    self.grammar, str(nonterminal_to_expand), self.max_num_expansions
-                )
-                assert expansions, (
-                    "I couldn't find expansions for the nonterminal symbol "
-                    + f"{nonterminal_to_expand} with {self.max_num_expansions} "
-                    + "maximum expansions. Consider increasing the maximum "
-                    + "number of expansions."
-                )
-                replacements[nonterminal_to_expand] = expansions
-
-            new_expansions: List[List[GrammarElem]] = list([])
-
-            for idx, new_expansion in enumerate(expansions):
-                to_add = (
-                    expansion[:nonterminal_idx]
-                    + new_expansion
-                    + expansion[nonterminal_idx + 1 :]
-                )
-                if to_add not in new_expansions:
-                    new_expansions.append(to_add)
-
-            canonical_grammar[nonterminal] = (
-                canonical_grammar[nonterminal][:expansion_idx]
-                + new_expansions
-                + canonical_grammar[nonterminal][expansion_idx + 1 :]
-            )
-
-            # Update remaining problem pointers
-            old_problematic_expansions = OrderedSet(problematic_expansions)
-            for idx, new_expansion in enumerate(expansions):
-                for other_expansion_index, other_nonterminal_index in [
-                    (other_expansion_index, other_nonterminal_index)
-                    for (
-                        other_nonterminal,
-                        other_expansion_index,
-                        other_nonterminal_index,
-                    ) in old_problematic_expansions
-                    if nonterminal == other_nonterminal
-                    if other_expansion_index >= expansion_idx
-                ]:
-                    if (
-                        nonterminal,
-                        other_expansion_index,
-                        other_nonterminal_index,
-                    ) in problematic_expansions:
-                        problematic_expansions.remove(
-                            (
-                                nonterminal,
-                                other_expansion_index,
-                                other_nonterminal_index,
+                                for symbol in alternative[:-1]
                             )
-                        )
-
-                    new_expansion_index = other_expansion_index + idx
-                    assert new_expansion_index < len(canonical_grammar[nonterminal])
-
-                    if other_nonterminal_index >= nonterminal_idx:
-                        new_nonterminal_index = (
-                            other_nonterminal_index + len(new_expansion) - 1
-                        )
-                    else:
-                        new_nonterminal_index = other_nonterminal_index
-
-                    assert new_nonterminal_index < len(
-                        canonical_grammar[nonterminal][new_expansion_index]
-                    ), "Invalid nonterminal index produced."
-
-                    new_problemantic_element = canonical_grammar[nonterminal][
-                        new_expansion_index
-                    ][new_nonterminal_index]
-                    assert type(new_problemantic_element) is Nonterminal, (
-                        f"Symbol {new_problemantic_element} is "
-                        f"a terminal symbol and can thus not be problematic."
+                        ),
+                        alternative[-1],
                     )
+                    if nonterminal != end_symbol
+                    else alternative
+                )
+                for alternative in alternatives
+            )
+            for nonterminal, alternatives in grammar.items()
+            if nonterminal == start_symbol
+            or nonterminal in closure.get(start_symbol, ())
+        }
+    )
 
-                    problematic_expansions.add(
-                        (nonterminal, new_expansion_index, new_nonterminal_index)
+
+def add_end_symbol(
+    grammar: CanonicalGrammar, closure: frozendict[str, FrozenOrderedSet[str]]
+) -> FrozenCanonicalGrammar:
+    end_symbol = fresh_nonterminal(grammar, "<end>")
+
+    grammar = frozendict(
+        {
+            nonterminal: tuple(
+                (
+                    tuple(alternative) + (end_symbol,)
+                    if (
+                        len(alternative) == 0
+                        or not is_nonterminal(alternative[-1])
+                        or nonterminal not in closure.get(alternative[-1], ())
                     )
+                    else alternative
+                )
+                for alternative in alternatives
+            )
+            for nonterminal, alternatives in grammar.items()
+        }
+        | {end_symbol: ((epsilon(),),)}
+    )
 
-        result = typed_canonical_to_grammar(canonical_grammar)
-        delete_unreachable(result)
-        return result
+    return end_symbol, grammar
 
-    def assert_regular(self, node):
-        """Asserts that the sub grammar at node is regular. Has a side effect: self.grammar_type is set!"""
-        assert self.is_regular(node), (
-            f"The sub grammar at node {node.symbol} is not regular "
-            f"and cannot be converted to an NFA."
+
+def eliminate_symbol(
+    grammar: IntermediateGrammar, symbol_to_eliminate: str, end_symbol: str
+) -> IntermediateGrammar:
+    """
+     That is, given
+
+     ```
+     A -> b B
+       |  c D
+     B -> e E
+       |  f F
+     ```
+
+     Eliminating B will result in
+
+     ```
+     A -> b e E       # new
+       |  b f F       # new
+       |  c D
+     B -> e E
+       |  f F
+    ```
+
+    :param symbol_to_eliminate:
+    :param grammar:
+    :param end_symbol:
+    :return:
+    """
+
+    grammar_after_elimination = frozendict()
+    for nonterminal, alternatives in grammar.items():
+        if nonterminal == symbol_to_eliminate:
+            continue
+
+        new_alternatives: Tuple[Tuple[Regex, str], ...] = ()
+        for alternative in alternatives:
+            if alternative[-1] != symbol_to_eliminate:
+                new_alternatives += (alternative,)
+                continue
+
+            new_alternatives += tuple(
+                (
+                    concat(
+                        *(alternative[:-1] + alternative_of_symbol_to_eliminate[:-1])
+                    ),
+                    alternative_of_symbol_to_eliminate[-1],
+                )
+                for alternative_of_symbol_to_eliminate in grammar[symbol_to_eliminate]
+            )
+
+        grammar_after_elimination = grammar_after_elimination.set(
+            nonterminal, new_alternatives
         )
 
-    def is_regular(self, nonterminal: str | NonterminalNode) -> bool:
-        """
-        Checks whether the language generated from "grammar" starting in "nonterminal" is regular.
-        This is the case if all productions either are left- or rightlinear, with the exception that
-        they may contain nonterminals that form a tree in the grammar. Those trivially represent
-        regular expressions.
+        assert is_intermediate_grammar(grammar_after_elimination, end_symbol)
+    return grammar_after_elimination
 
-        :param nonterminal: A nonterminal within this grammar.
-        :return: True iff the language defined by the sublanguage of grammar's language when
-                 starting in nonterminal is regular.
-        """
 
-        nonterminal_str = (
-            nonterminal if type(nonterminal) is str else nonterminal.symbol
+def is_intermediate_grammar(
+    regular_grammar_with_regex_prefixes: IntermediateGrammar,
+    end_symbol: str,
+) -> bool:
+    return all(
+        isinstance(alternatives, tuple)
+        and isinstance(alternative, tuple)
+        and (
+            (nonterminal == end_symbol and alternatives == ((epsilon(),),))
+            or (
+                1 <= len(alternative) <= 2
+                and isinstance(alternative[0], Regex)
+                and isinstance(alternative[1], str)
+            )
+        )
+        for nonterminal, alternatives in regular_grammar_with_regex_prefixes.items()
+        for alternative in alternatives
+    )
+
+
+def compress_prefixes_to_unions(
+    regular_grammar_with_regex_prefixes: IntermediateGrammar,
+    end_symbol: str,
+) -> frozendict[str, Tuple[Tuple[Regex, str] | Regex, ...]]:
+    """
+    <A> := a <B> | b <B> to (a|b) <B>
+
+    :param regular_grammar_with_regex_prefixes:
+    :param end_symbol:
+    :return:
+    """
+
+    regular_grammar_with_union_prefixes = frozendict(
+        {
+            nonterminal: tuple(
+                (
+                    (epsilon(),)
+                    if nonterminal == end_symbol
+                    else (
+                        union(*(alternative[0] for alternative in group)),
+                        final_nonterminal,
+                    )
+                )
+                for final_nonterminal, group in itertools.groupby(
+                    alternatives, key=lambda alternative: alternative[-1]
+                )
+            )
+            for nonterminal, alternatives in regular_grammar_with_regex_prefixes.items()
+        }
+    )
+    return regular_grammar_with_union_prefixes
+
+
+def eliminate_direct_recursion(
+    regular_grammar_with_union_prefixes: IntermediateGrammar,
+    end_symbol: str,
+) -> IntermediateGrammar:
+    """
+
+    #
+    # ```
+    # A -> b B
+    #    | c C
+    #    | a A
+    # ```
+    #
+    # becomes
+    #
+    # ```
+    # A -> a* b B
+    #    | a* c C
+    # ```
+
+    :param regular_grammar_with_union_prefixes:
+    :param end_symbol:
+    :return:
+    """
+    direct_recursion_free_grammar: IntermediateGrammar = frozendict()
+
+    for nonterminal, alternatives in regular_grammar_with_union_prefixes.items():
+        recursive_alternative = next(
+            (
+                alternative
+                for alternative in alternatives
+                if nonterminal == alternative[-1]
+            ),
+            None,
+        )
+        assert recursive_alternative is None or len(recursive_alternative) == 2
+
+        if recursive_alternative is None:
+            direct_recursion_free_grammar = direct_recursion_free_grammar.set(
+                nonterminal, alternatives
+            )
+            continue
+
+        direct_recursion_free_grammar = direct_recursion_free_grammar.set(
+            nonterminal,
+            tuple(
+                (
+                    concat(star(recursive_alternative[0]), alternative[0]),
+                    alternative[-1],
+                )
+                for alternative in alternatives
+                if alternative != recursive_alternative
+            ),
         )
 
-        if (
-            self.regularity_cache_created_for == self.grammar
-            and nonterminal_str in self.regularity_cache
-        ):
-            return self.regularity_cache[nonterminal_str]
-        elif self.regularity_cache_created_for != self.grammar:
-            self.regularity_cache_created_for = self.grammar
-            self.regularity_cache = {}
+        assert is_intermediate_grammar(direct_recursion_free_grammar, end_symbol)
 
-        result = not self.nonregular_expansions(nonterminal)
-
-        self.regularity_cache[nonterminal_str] = result
-
-        return result
-
-    def nonregular_expansions(
-        self,
-        nonterminal: str | NonterminalNode,
-        call_seq: Tuple = (),
-        problems: Optional[OrderedSet[Tuple[NonterminalType, int, int]]] = None,
-    ) -> OrderedSet[Tuple[NonterminalType, int, int]]:
-        """
-        Returns pointers to expansions in a grammar which make the grammar non-regular. Those can then
-        be unwound to convert the grammar into a regular grammar which represents a sub language.
-
-        :param nonterminal: A nonterminal within this grammar.
-        :param call_seq: A tuple of already seen nodes, used to break infinite recursion.
-        :param problems: The so far encountered problematic expansions
-        :return: A set of tuples, where each tuple represents a problematic expansion: A nonterminal (left-hand
-                 side in the grammar), the index of the expansion where the problem occurs, and the index of
-                 the problematic nonterminal within the expansion.
-        """
-
-        if not call_seq:
-            self.grammar_type = GrammarType.UNDET
-
-        if problems is None:
-            problems = OrderedSet([])
-
-        if isinstance(nonterminal, str):
-            nonterminal = self.grammar_graph.get_node(nonterminal)
-            assert nonterminal
-        nonterminal: NonterminalNode
-
-        if nonterminal in call_seq:
-            return problems
-
-        # If the graph is a tree, we can easily create a regular expression with
-        # concatenations and alternatives.
-
-        if self.grammar_graph.subgraph(nonterminal).is_tree():
-            return problems
-
-        # If there is recursion, check if those children nonterminals with backlinks
-        # are always at the left- or rightmost position, and all others are regular.
-
-        choice_node: ChoiceNode
-        for choice_node_index, choice_node in enumerate(nonterminal.children):
-            found_backlink = False
-            backlink_position = -1
-            for index, child in enumerate(choice_node.children):
-                if isinstance(child, TerminalNode):
-                    continue
-
-                child: NonterminalNode
-                if self.grammar_graph.subgraph(
-                    child
-                ).is_tree() or not self.grammar_graph.reachable(child, nonterminal):
-                    continue
-
-                # if found_backlink:
-                #     problems.add((nonterminal.symbol, choice_node_index, index))
-
-                if len(choice_node.children) > 1:
-                    if index == 0:
-                        if self.grammar_type == GrammarType.RIGHT_LINEAR:
-                            problems.add((nonterminal.symbol, choice_node_index, index))
-                        else:
-                            self.grammar_type = GrammarType.LEFT_LINEAR
-                    elif index == len(choice_node.children) - 1:
-                        if self.grammar_type == GrammarType.LEFT_LINEAR:
-                            problems.add((nonterminal.symbol, choice_node_index, index))
-                        else:
-                            self.grammar_type = GrammarType.RIGHT_LINEAR
-                    else:
-                        problems.add((nonterminal.symbol, choice_node_index, index))
-
-                found_backlink = True
-                backlink_position = index
-
-            assert not found_backlink or backlink_position >= 0
-
-            # if found_backlink and len(choice_node.children) > 1:
-            #     if backlink_position == 0:
-            #         if self.grammar_type == GrammarType.RIGHT_LINEAR:
-            #             problems.add((nonterminal.symbol, choice_node_index, backlink_position))
-            #         self.grammar_type = GrammarType.LEFT_LINEAR
-            #     elif backlink_position == len(choice_node.children) - 1:
-            #         if self.grammar_type == GrammarType.LEFT_LINEAR:
-            #             problems.add((nonterminal.symbol, choice_node_index, backlink_position))
-            #         self.grammar_type = GrammarType.RIGHT_LINEAR
-            #     else:
-            #         problems.add((nonterminal.symbol, choice_node_index, backlink_position))
-
-        all_nontree_children_nonterminals = OrderedSet([])
-        for choice_node in nonterminal.children:
-            for child in choice_node.children:
-                if (
-                    type(child) is NonterminalNode
-                    and not self.grammar_graph.subgraph(child).is_tree()
-                ):
-                    all_nontree_children_nonterminals.add(child)
-
-        children_results = [
-            self.nonregular_expansions(child, call_seq + (nonterminal,), problems)
-            for child in all_nontree_children_nonterminals
-        ]
-
-        result = OrderedSet()
-        for child_result in children_results:
-            result |= child_result
-
-        return result
-
-    def str_to_nonterminal_node(self, node: str | Node) -> NonterminalNode:
-        if type(node) is str:
-            node = self.grammar_graph.get_node(node)
-            assert node
-        assert type(node) is NonterminalNode
-        return node
+    return direct_recursion_free_grammar
 
 
 def compress_unions(regex: Regex) -> Regex:
-    # We assume that all unions are flattened, i.e., there are no unions directly nested inside unions
-    if isinstance(regex, Union):
-        # Compress single-char unions to ranges
-        char_nodes = [child for child in regex.children if isinstance(child, Singleton)]
+    """
+    Compresses unions into ranges. We assume that all unions are flattened, i.e.,
+    there are no unions directly nested inside unions.
 
-        others = [
-            compress_unions(child)
-            for child in regex.children
-            if child not in char_nodes
-        ]
+    >>> compress_unions(union(Singleton("a"), Singleton("b"), Singleton("c")))
+    Range(from_char='a', to_char='c')
 
-        chars = OrderedSet([char_node.child for char_node in char_nodes])
-        # NOTE: In some cases, string sequences that are longer than one char can appear in chars;
-        #       for an XML grammar, e.g., escaped sequences like &quot; might appear.
-        char_codes = sorted([ord(char) for char in chars if len(char) == 1])
-        consecutive_char_codes = consecutive_numbers(char_codes)
+    :param regex: The regex to compress.
+    :return: The compressed regex.
+    """
 
-        union_nodes = [
-            (
-                Singleton(chr(group[0]))
-                if len(group) == 1
-                else Range(chr(group[0]), chr(group[-1]))
+    match regex:
+        case Union(children):
+            # Compress single-char unions to ranges
+            singletons = tuple(filter(Singleton.__instancecheck__, children))
+
+            others = [
+                compress_unions(child) for child in children if child not in singletons
+            ]
+
+            chars = frozendict({char_node.child: None for char_node in singletons})
+            # NOTE: In some cases, string sequences that are longer than one char can appear in chars;
+            #       for an XML grammar, e.g., escaped sequences like &quot; might appear.
+            char_codes = sorted([ord(char) for char in chars if len(char) == 1])
+
+            union_nodes = [
+                (
+                    Singleton(chr(group[0]))
+                    if len(group) == 1
+                    else Range(chr(group[0]), chr(group[-1]))
+                )
+                for group in consecutive_numbers(char_codes)
+            ]
+            union_nodes += others
+
+            # NOTE: `longer_str` can also include the empty string.
+            union_nodes.extend(
+                [Singleton(longer_str) for longer_str in chars if len(longer_str) != 1]
             )
-            for group in consecutive_char_codes
-        ]
-        union_nodes += others
 
-        # NOTE: `longer_str` can also include the empty string.
-        union_nodes.extend(
-            [Singleton(longer_str) for longer_str in chars if len(longer_str) != 1]
-        )
-
-        return union(*union_nodes)
-
-    if isinstance(regex, Star):
-        return Star(compress_unions(regex.child))
-
-    if isinstance(regex, Concat):
-        return concat(*[compress_unions(child) for child in regex.children])
-
-    return regex
+            return union(*union_nodes)
+        case Star(child):
+            return Star(compress_unions(child))
+        case Concat(children):
+            return concat(*[compress_unions(child) for child in children])
+        case _:
+            return regex
